@@ -2,6 +2,7 @@ services:
   - type: web
     name: luma-gadget-impact
     runtime: docker
+    plan: free
     dockerCommand: streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT
     healthCheckPath: /_stcore/health
     autoDeploy: true
@@ -9,6 +10,7 @@ services:
   - type: web
     name: luma-gadget-impact-api
     runtime: docker
+    plan: free
     dockerCommand: uvicorn api:app --host 0.0.0.0 --port=$PORT
     healthCheckPath: /health
     autoDeploy: true
