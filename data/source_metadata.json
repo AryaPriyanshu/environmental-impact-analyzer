@@ -1,0 +1,151 @@
+{
+  "schema_version": "3.0",
+  "snapshot_id": "511869fd34bfc302",
+  "generated_at": "2026-08-23T14:57:31.671025+00:00",
+  "snapshot_date": "2026-08-23",
+  "record_count": 13130,
+  "unique_entities": 13126,
+  "manufacturer_count": 604,
+  "categories": {
+    "Laptop": 4629,
+    "Monitor": 2710,
+    "Printer / scanner": 2632,
+    "Tablet": 1271,
+    "Smartphone": 1154,
+    "Desktop": 452,
+    "Television": 180,
+    "Router / network": 93,
+    "Smartwatch": 3,
+    "Speaker": 2,
+    "Streaming device": 2,
+    "Headphones": 1,
+    "Spatial computer": 1
+  },
+  "freshness": {
+    "recent": 9301,
+    "active": 2245,
+    "legacy": 1584
+  },
+  "data_quality": {
+    "Moderate": 9666,
+    "Strong": 2238,
+    "Limited": 1226
+  },
+  "duplicate_evidence_records": 8,
+  "repair_profiles": 298,
+  "grid_regions": 238,
+  "sources": [
+    {
+      "name": "ENERGY STAR Computers V9.0",
+      "url": "https://data.energystar.gov/d/rxdj-2c88",
+      "records": 1788,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "U.S. government public data",
+      "resource": "https://data.energystar.gov/resource/rxdj-2c88.json?$limit=50000",
+      "status": "current"
+    },
+    {
+      "name": "ENERGY STAR Displays V8.0",
+      "url": "https://data.energystar.gov/d/qbg3-d468",
+      "records": 2846,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "U.S. government public data",
+      "resource": "https://data.energystar.gov/resource/qbg3-d468.json?$limit=50000",
+      "status": "current"
+    },
+    {
+      "name": "ENERGY STAR Televisions V9.x",
+      "url": "https://data.energystar.gov/d/pd96-rr3d",
+      "records": 180,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "U.S. government public data",
+      "resource": "https://data.energystar.gov/resource/pd96-rr3d.json?$limit=50000",
+      "status": "current"
+    },
+    {
+      "name": "ENERGY STAR Imaging Equipment V3.x",
+      "url": "https://data.energystar.gov/d/t2v6-g4nf",
+      "records": 2745,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "U.S. government public data",
+      "resource": "https://data.energystar.gov/resource/t2v6-g4nf.json?$limit=50000",
+      "status": "current"
+    },
+    {
+      "name": "ENERGY STAR Large Network Equipment",
+      "url": "https://data.energystar.gov/d/n8cx-m62r",
+      "records": 96,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "U.S. government public data",
+      "resource": "https://data.energystar.gov/resource/n8cx-m62r.json?$limit=50000",
+      "status": "current"
+    },
+    {
+      "name": "EU EPREL Smartphones & Tablets",
+      "url": "https://eprel.ec.europa.eu/screen/product/smartphonestablets20231669",
+      "records": 2358,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "EU public registry; see EPREL terms",
+      "resource": "https://eprel.ec.europa.eu/api/products/smartphonestablets20231669",
+      "status": "current"
+    },
+    {
+      "name": "French Repairability Index",
+      "url": "https://www.data.gouv.fr/datasets/fichiers-consolides-des-donnees-respectant-le-schema-indice-de-reparabilite",
+      "records": 3416,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "Licence Ouverte / Open Licence 2.0",
+      "resource": "https://static.data.gouv.fr/resources/fichiers-consolides-des-donnees-respectant-le-schema-indice-de-reparabilite/20260823-072711/consolidation-etalab-schema-indice-reparabilite-v-0.1.2-20260823.csv",
+      "status": "current"
+    },
+    {
+      "name": "iFixit Smartphone Repairability",
+      "url": "https://fr.ifixit.com/reparabilite/indices-smartphone",
+      "records": 155,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "See iFixit source terms",
+      "resource": "https://docs.google.com/spreadsheets/d/1R_egXm7iwR0isCt_UxcGtheFEwLj9SNhxC5DWnAqKIc/gviz/tq?tqx=out:csv",
+      "status": "current"
+    },
+    {
+      "name": "Apple Product Environmental Reports",
+      "url": "https://www.apple.com/environment/pdf/Apple_Environmental_Progress_Report_2026.pdf",
+      "records": 32,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "Copyright manufacturer; factual values linked to source",
+      "resource": "https://www.apple.com/environment/pdf/Apple_Environmental_Progress_Report_2026.pdf",
+      "status": "current"
+    },
+    {
+      "name": "Samsung Product Environmental Reports",
+      "url": "https://www.samsung.com/global/sustainability/landing_hub-file/AZzQUdPqFI0ALYOH/Galaxy_S26_Environmental_Report_EN.pdf",
+      "records": 5,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "Copyright manufacturer; factual values linked to source",
+      "resource": "https://www.samsung.com/global/sustainability/landing_hub-file/AZzQUdPqFI0ALYOH/Galaxy_S26_Environmental_Report_EN.pdf",
+      "status": "current"
+    },
+    {
+      "name": "Open Repair Data",
+      "url": "https://openrepair.org/open-data/downloads/",
+      "records": 38677,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "CC BY-SA 4.0",
+      "resource": "https://raw.githubusercontent.com/openrepair/data/master/aggregated/202507/OpenRepairData_v0.3_aggregate_202507.csv",
+      "status": "current",
+      "profiles": 298
+    },
+    {
+      "name": "Electricity carbon intensity (Our World in Data / Ember)",
+      "url": "https://ourworldindata.org/grapher/carbon-intensity-electricity",
+      "records": 238,
+      "retrieved_at": "2026-08-23T14:57:31.671025+00:00",
+      "license": "CC BY 4.0; see source notes",
+      "resource": "https://ourworldindata.org/grapher/electricity-mix.csv?v=1&csvType=full&useColumnShortNames=false&source=total&metric=carbon_intensity&frequency=annual",
+      "status": "current",
+      "latest_year": 2025
+    }
+  ],
+  "license_note": "Source-specific licences and terms apply. Every record retains its source URL and retrieval time.",
+  "method_note": "Observed source fields are kept separate from category assumptions. Entity resolution groups complementary evidence without inventing merged measurements."
+}
