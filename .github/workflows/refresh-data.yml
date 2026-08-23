@@ -1,0 +1,48 @@
+name: Refresh public gadget data
+
+on:
+  schedule:
+    - cron: "17 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Refresh, resolve duplicates and retrain
+        env:
+          EPREL_API_KEY: ${{ secrets.EPREL_API_KEY }}
+        run: |
+          python src/sync_official_data.py
+          python src/train_model.py
+          python src/database.py
+          python src/monitor.py
+          python -m pytest -q
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gadget-data-snapshot
+          path: |
+            data/
+            models/
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/refresh-gadget-data
+          delete-branch: true
+          commit-message: "data: refresh public gadget snapshot and model"
+          title: "Automated public gadget data refresh"
+          body: |
+            Monthly refresh of public source records, entity resolution, regional grid data,
+            repair profiles, trained category models and health checks. Tests passed in the workflow.
+          labels: data-refresh
