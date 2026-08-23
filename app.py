@@ -54,6 +54,12 @@ palette = {
     "shadow": "0 22px 60px rgba(0,0,0,.34)" if DARK else "0 18px 50px rgba(28,72,49,.10)",
     "hero_a": "#0b2118" if DARK else "#0b2f21",
     "hero_b": "#133a29" if DARK else "#135f3c",
+    "button_bg": "#4cdd93" if DARK else "#126b42",
+    "button_ink": "#06120c" if DARK else "#ffffff",
+    "table_bg": "#050a08" if DARK else "#ffffff",
+    "table_alt": "#0a120e" if DARK else "#f7faf8",
+    "table_head": "#101a16" if DARK else "#eef4f0",
+    "table_ink": "#f5fbf7" if DARK else "#14241c",
 }
 
 css = r"""
@@ -62,6 +68,8 @@ css = r"""
 :root{
   --ink:__INK__;--muted:__MUTED__;--paper:__PAPER__;--card:__CARD__;--card2:__CARD2__;
   --line:__LINE__;--green:__GREEN__;--bright:__BRIGHT__;--mint:__MINT__;--amber:__AMBER__;--shadow:__SHADOW__;
+  --button-bg:__BUTTON_BG__;--button-ink:__BUTTON_INK__;--table-bg:__TABLE_BG__;--table-alt:__TABLE_ALT__;
+  --table-head:__TABLE_HEAD__;--table-ink:__TABLE_INK__;
   color-scheme:__COLOR_SCHEME__;
 }
 @keyframes page-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
@@ -73,7 +81,7 @@ css = r"""
 @keyframes ring-fill{from{--ring-progress:0deg}to{--ring-progress:var(--ring-target)}}
 html{scroll-behavior:smooth}.stApp{background:var(--paper);color:var(--ink)}
 [data-testid="stAppViewContainer"]{background:radial-gradient(circle at 12% 0%,rgba(76,221,147,.075),transparent 28rem),var(--paper)}
-[data-testid="stHeader"]{background:transparent}.block-container{max-width:1420px;padding:1.15rem 2rem 3.6rem;animation:page-in .48s ease both}
+[data-testid="stHeader"]{background:transparent}.block-container{max-width:1420px;padding:1.15rem 2rem 3.6rem;animation:page-in .48s ease both}.stMainBlockContainer{transform:none!important}
 h1,h2,h3,h4,[data-testid="stMetricValue"]{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;letter-spacing:-.035em;color:var(--ink)}
 p,label,span,div{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.stCaption,.stMarkdown p{color:var(--muted)}
 .top-brand{display:flex;align-items:center;gap:.78rem;padding:.42rem 0 .8rem}.brand-orb{width:31px;height:31px;border-radius:50%;border:1px solid var(--green);position:relative;box-shadow:inset 0 0 0 7px var(--mint)}.brand-orb:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:var(--bright);right:-2px;top:2px}.brand-name{font-weight:800;font-size:.95rem;letter-spacing:.16em;color:var(--ink)}.brand-note{font-size:.71rem;color:var(--muted);border-left:1px solid var(--line);padding-left:.75rem}
@@ -90,12 +98,16 @@ p,label,span,div{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFon
 .callout{position:relative;overflow:hidden;background:linear-gradient(135deg,var(--mint),var(--card));border:1px solid var(--line);border-left:4px solid var(--bright);padding:1.05rem 1.2rem;border-radius:14px;color:var(--ink);line-height:1.55;margin:.85rem 0}.callout b{color:var(--green)}.callout.warning{border-left-color:var(--amber)}
 .field-row{display:flex;justify-content:space-between;gap:1rem;border-bottom:1px solid var(--line);padding:.67rem .2rem;color:var(--ink);transition:padding .2s ease,background .2s ease}.field-row:hover{padding-left:.65rem;padding-right:.65rem;background:var(--card2);border-radius:9px}.observed{color:var(--green);font-weight:700}.estimated{color:var(--amber);font-weight:700}.tiny{color:var(--muted);font-size:.76rem}.source-card{padding:1rem 1.15rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin:.48rem 0;transition:transform .2s ease,border-color .2s ease}.source-card:hover{transform:translateX(4px);border-color:rgba(76,221,147,.48)}.source-card a{color:var(--green);font-weight:700;text-decoration:none}.source-card span{display:block;color:var(--muted);font-size:.72rem;margin-top:.22rem}
 .saved-card{padding:1rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:16px;margin:.5rem 0}.saved-card strong{color:var(--ink)}.saved-card span{color:var(--muted);font-size:.74rem}.method-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:.65rem;align-items:center;margin:1rem 0}.flow-node{padding:1rem;background:var(--card);border:1px solid var(--line);border-radius:15px;text-align:center;color:var(--ink);font-weight:700;font-size:.78rem}.flow-node span{display:block;color:var(--muted);font-weight:400;font-size:.68rem;margin-top:.25rem}.flow-arrow{color:var(--green);font-weight:900}
-button[kind="primary"],.stDownloadButton button,.stLinkButton a{border-radius:11px!important;transition:transform .2s ease,box-shadow .2s ease!important}.stDownloadButton button:hover,.stLinkButton a:hover,button[kind="primary"]:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(22,111,69,.16)}
-.stTabs [data-baseweb="tab-list"]{gap:.25rem;padding:.3rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:1rem;overflow-x:auto}.stTabs [data-baseweb="tab"]{padding:.55rem .88rem;color:var(--muted);border-radius:10px;transition:background .2s ease,color .2s ease,transform .2s ease}.stTabs [data-baseweb="tab"]:hover{background:var(--mint);color:var(--green);transform:translateY(-1px)}.stTabs [aria-selected="true"]{color:var(--green)!important;background:var(--card2)!important;box-shadow:0 5px 14px rgba(24,72,45,.08)}.stTabs [data-baseweb="tab"] p{color:inherit!important;white-space:nowrap}
-.stTextInput input,.stNumberInput input,[data-baseweb="select"]>div,.stMultiSelect [data-baseweb="select"]>div{border-radius:11px!important;background:var(--card)!important;color:var(--ink)!important;border-color:var(--line)!important}.stTextInput input:focus,.stNumberInput input:focus,[data-baseweb="select"]>div:focus-within{border-color:var(--bright)!important;box-shadow:0 0 0 3px rgba(76,221,147,.13)!important}[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 8px 28px rgba(25,60,39,.05)}[data-testid="stExpander"]{background:var(--card);border-color:var(--line)!important;border-radius:14px!important}[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.8rem}
-[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p{color:var(--ink)!important}.stAlert{border-radius:14px}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+button[kind="primary"],.stDownloadButton button,.stLinkButton a{border-radius:11px!important;transition:transform .2s ease,box-shadow .2s ease!important}.stDownloadButton button{background:var(--button-bg)!important;border:1px solid var(--button-bg)!important;color:var(--button-ink)!important}.stDownloadButton button p,.stDownloadButton button span,.stDownloadButton button div{color:var(--button-ink)!important;opacity:1!important;font-weight:750!important}.stLinkButton a{background:var(--card2)!important;border:1px solid var(--line)!important;color:var(--ink)!important}.stLinkButton a p,.stLinkButton a span,.stLinkButton a div{color:var(--ink)!important;opacity:1!important}.stDownloadButton button:hover,.stLinkButton a:hover,button[kind="primary"]:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(22,111,69,.24)}.stDownloadButton button:hover{filter:brightness(1.06)}.stLinkButton a:hover{background:var(--mint)!important;border-color:var(--bright)!important}
+button[kind="secondary"]{background:var(--card2)!important;border-color:var(--line)!important;color:var(--ink)!important}button[kind="secondary"] p,button[kind="secondary"] span,button[kind="secondary"] div{color:var(--ink)!important;opacity:1!important}button[kind="secondary"]:hover{background:var(--mint)!important;border-color:var(--bright)!important}
+.stTabs > div > div:has(> [data-baseweb="tab-list"]){position:sticky;top:.55rem;z-index:100}.stTabs [data-baseweb="tab-list"]{position:relative;gap:.25rem;padding:.36rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:1rem;overflow-x:auto;box-shadow:0 12px 32px rgba(0,0,0,.16);backdrop-filter:blur(16px)}.stTabs [data-baseweb="tab"]{padding:.55rem .88rem;color:var(--muted);border-radius:10px;transition:background .2s ease,color .2s ease,transform .2s ease}.stTabs [data-baseweb="tab"]:hover{background:var(--mint);color:var(--green);transform:translateY(-1px)}.stTabs [aria-selected="true"]{color:var(--green)!important;background:var(--card2)!important;box-shadow:0 5px 14px rgba(24,72,45,.08)}.stTabs [data-baseweb="tab"] p{color:inherit!important;white-space:nowrap}
+.stTabs [data-baseweb="tab-highlight"]{display:none}
+.stTextInput input,.stNumberInput input,[data-baseweb="select"]>div,.stMultiSelect [data-baseweb="select"]>div{border-radius:11px!important;background:var(--card)!important;color:var(--ink)!important;border-color:var(--line)!important}.stTextInput input::placeholder,.stNumberInput input::placeholder,[data-baseweb="select"] input::placeholder{color:var(--muted)!important;opacity:1!important}[data-baseweb="select"] div{color:var(--ink)!important}[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:var(--card)!important;border:1px solid var(--line)!important}[role="option"]{background:var(--card)!important;color:var(--ink)!important}[role="option"]:hover,[role="option"][aria-selected="true"]{background:var(--mint)!important}.stTextInput input:focus,.stNumberInput input:focus,[data-baseweb="select"]>div:focus-within{border-color:var(--bright)!important;box-shadow:0 0 0 3px rgba(76,221,147,.13)!important}[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 8px 28px rgba(25,60,39,.05)}[data-testid="stExpander"]{background:var(--card);border-color:var(--line)!important;border-radius:14px!important}[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.8rem}
+[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p,[data-testid="stRadio"] label p,[data-testid="stCheckbox"] label p{color:var(--ink)!important;opacity:1!important}[data-testid="stMetricLabel"] p{color:var(--muted)!important;opacity:1!important}.stAlert{border-radius:14px}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.data-table-shell{width:100%;max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--table-bg);box-shadow:0 12px 34px rgba(0,0,0,.18);scrollbar-color:var(--green) var(--table-bg);scrollbar-width:thin;-webkit-overflow-scrolling:touch}.data-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:var(--table-bg);color:var(--table-ink);font-size:.76rem;line-height:1.35}.data-table th{position:sticky;top:0;z-index:2;padding:.72rem .7rem;background:var(--table-head);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;font-weight:750}.data-table td{max-width:290px;padding:.65rem .7rem;background:var(--table-bg);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.data-table tbody tr:nth-child(even) td{background:var(--table-alt)}.data-table tbody tr:hover td{background:var(--mint);color:var(--ink)}.data-table th:last-child,.data-table td:last-child{border-right:0}.data-table a{color:var(--green);font-weight:750;text-decoration:none}.data-table a:hover{text-decoration:underline}
 @media(max-width:1080px){.device-scene{right:-4%;opacity:.58}.hero-content{max-width:72%}.kpi-grid{grid-template-columns:1fr}.kpi{min-height:112px}.method-flow{grid-template-columns:1fr}.flow-arrow{transform:rotate(90deg);text-align:center}}
-@media(max-width:760px){.block-container{padding:.75rem .82rem 2.4rem}.brand-note{display:none}.hero{min-height:auto;padding:2rem 1.35rem;border-radius:23px}.hero-content{max-width:100%}.hero h1{font-size:2.55rem}.hero p{font-size:.92rem;max-width:88%}.device-scene{right:-126px;top:46%;opacity:.22}.statbar{gap:.42rem}.stat{min-width:calc(50% - .25rem);padding:.58rem .65rem}.signal-strip{grid-template-columns:1fr;gap:.5rem}.signal-card{padding:.72rem .8rem}.stTabs [data-baseweb="tab"]{padding:.48rem .58rem}.stTabs [data-baseweb="tab"] p{font-size:.68rem!important}.score-card{flex-direction:column;text-align:center}.score-copy{display:flex;flex-direction:column;align-items:center}.kpi-grid{grid-template-columns:1fr;gap:.5rem}.kpi{min-height:108px}.result-count{align-items:flex-start;flex-direction:column;gap:.2rem}}
+@media(min-width:761px){[data-testid="stHorizontalBlock"]:has(.top-brand){margin-top:1.65rem}}
+@media(max-width:760px){.block-container{padding:.75rem .82rem 2.4rem}.brand-note{display:none}.hero{min-height:auto;padding:2rem 1.35rem;border-radius:23px}.hero-content{max-width:100%}.hero h1{font-size:2.55rem}.hero p{font-size:.92rem;max-width:88%}.device-scene{right:-126px;top:46%;opacity:.22}.statbar{gap:.42rem}.stat{min-width:calc(50% - .25rem);padding:.58rem .65rem}.signal-strip{grid-template-columns:1fr;gap:.5rem}.signal-card{padding:.72rem .8rem}.stTabs > div > div:has(> [data-baseweb="tab-list"]){position:static}.stTabs [data-baseweb="tab-list"]{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));position:static;overflow:visible;gap:.3rem}.stTabs [data-baseweb="tab"]{justify-content:center;padding:.48rem .42rem;min-width:0}.stTabs [data-baseweb="tab"] p{font-size:.68rem!important;white-space:normal;text-align:center;line-height:1.25}.score-card{flex-direction:column;text-align:center}.score-copy{display:flex;flex-direction:column;align-items:center}.kpi-grid{grid-template-columns:1fr;gap:.5rem}.kpi{min-height:108px}.result-count{align-items:flex-start;flex-direction:column;gap:.2rem}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 </style>
 """
@@ -104,7 +116,10 @@ replacements = {
     "__CARD__": palette["card"], "__CARD2__": palette["card2"], "__LINE__": palette["line"],
     "__GREEN__": palette["green"], "__BRIGHT__": palette["bright"], "__MINT__": palette["mint"],
     "__AMBER__": palette["amber"], "__SHADOW__": palette["shadow"], "__HERO_A__": palette["hero_a"],
-    "__HERO_B__": palette["hero_b"], "__COLOR_SCHEME__": "dark" if DARK else "light",
+    "__HERO_B__": palette["hero_b"], "__BUTTON_BG__": palette["button_bg"],
+    "__BUTTON_INK__": palette["button_ink"], "__TABLE_BG__": palette["table_bg"],
+    "__TABLE_ALT__": palette["table_alt"], "__TABLE_HEAD__": palette["table_head"],
+    "__TABLE_INK__": palette["table_ink"], "__COLOR_SCHEME__": "dark" if DARK else "light",
 }
 for token, value in replacements.items():
     css = css.replace(token, value)
@@ -166,6 +181,46 @@ def search_catalog(query: str, categories: list[str], sources: list[str], brands
             mask = haystack.str.contains(term, regex=False)
             frame, haystack = frame[mask], haystack[mask]
     return frame
+
+
+def _table_value(value) -> str:
+    if _missing(value):
+        return "—"
+    if isinstance(value, float):
+        return f"{value:,.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def render_data_table(
+    frame: pd.DataFrame,
+    *,
+    height: int = 520,
+    min_width: int = 760,
+    link_columns: set[str] | None = None,
+    aria_label: str = "Data table",
+) -> None:
+    """Render a compact, theme-native table with predictable dark-mode contrast."""
+    links = link_columns or set()
+    headers = "".join(f"<th scope='col'>{html.escape(str(column))}</th>" for column in frame.columns)
+    body_rows: list[str] = []
+    for row in frame.itertuples(index=False, name=None):
+        cells: list[str] = []
+        for column, value in zip(frame.columns, row):
+            display = _table_value(value)
+            escaped = html.escape(display)
+            if column in links and display.startswith(("https://", "http://")):
+                content = f'<a href="{html.escape(display, quote=True)}" target="_blank" rel="noopener noreferrer">Open ↗</a>'
+            else:
+                content = escaped
+            cells.append(f'<td title="{html.escape(display, quote=True)}">{content}</td>')
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+    markup = (
+        f'<div class="data-table-shell" role="region" aria-label="{html.escape(aria_label, quote=True)}" '
+        f'tabindex="0" style="max-height:{int(height)}px">'
+        f'<table class="data-table" style="min-width:{int(min_width)}px"><thead><tr>{headers}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+    st.markdown(markup, unsafe_allow_html=True)
 
 
 def product_values(row: pd.Series) -> dict:
@@ -288,8 +343,7 @@ if _query_value("theme") != THEME:
 category_count = catalog["category"].nunique()
 manufacturer_count = catalog["manufacturer"].nunique()
 unique_entities = metadata.get("unique_entities", len(catalog))
-st.markdown(
-    f"""
+hero_markup = f"""
     <section class="hero">
       <div class="hero-content">
         <div class="eyebrow">Evidence-first gadget intelligence</div>
@@ -311,15 +365,16 @@ st.markdown(
       <div class="signal-card"><span class="signal-icon">02</span><div><b>Personalise the lifecycle</b><span>Region, use, lifespan, repair and transport</span></div></div>
       <div class="signal-card"><span class="signal-icon">03</span><div><b>Act with context</b><span>Ranges, evidence quality and greener peers</span></div></div>
     </div>
-    """,
-    unsafe_allow_html=True,
-)
+    """
 
 
-explore, analyse, compare, saved, intelligence = st.tabs(["Explore data", "Analyse a gadget", "Compare", "Saved & reports", "AI & data quality"])
+tab_labels = ["Explore data", "Analyse a gadget", "Compare", "Saved & reports", "AI & data quality"]
+default_tab = "Analyse a gadget" if _query_value("tab") == "analyse" else "Explore data"
+explore, analyse, compare, saved, intelligence = st.tabs(tab_labels, default=default_tab)
 
 
 with explore:
+    st.markdown(hero_markup, unsafe_allow_html=True)
     st.subheader("Explore the living data snapshot")
     st.caption("Search source-backed identities and measurements. Estimated lifecycle fields appear only in the assessment experience.")
     f1, f2, f3 = st.columns([1.55, 1, 1])
@@ -341,13 +396,7 @@ with explore:
             "repairability": "Repairability / 10", "data_quality": "Evidence", "freshness_status": "Freshness", "source_url": "Source",
         }
     )
-    st.dataframe(
-        view,
-        hide_index=True,
-        width="stretch",
-        height=520,
-        column_config={"Source": st.column_config.LinkColumn("Source", display_text="Open ↗")},
-    )
+    render_data_table(view, height=520, min_width=1180, link_columns={"Source"}, aria_label="Filtered gadget records")
     if len(browse) > 1200:
         st.caption("Showing the first 1,200 matches. Refine the search or download the full filtered result set.")
     st.download_button("Download filtered records", browse.to_csv(index=False).encode(), "luma-gadget-data-filtered.csv", "text/csv")
@@ -497,8 +546,18 @@ with analyse:
                 pdf = assessment_pdf(values, result, narrative, tips)
                 st.download_button("Download impact report", pdf, f"luma-{_safe_name(values['name'])}.pdf", "application/pdf", width="stretch")
             with action_3:
-                share_query = f"?theme={THEME}&product={quote(str(values.get('product_id', '')))}&region={quote(region if 'region' in locals() else 'India')}"
-                st.text_input("Shareable view", value=share_query, help="Copy this query onto the deployed app URL.")
+                shareable_product_id = str(values.get("product_id", "")).strip()
+                if shareable_product_id:
+                    share_query = f"?theme={THEME}&tab=analyse&product={quote(shareable_product_id)}&region={quote(region if 'region' in locals() else 'India')}"
+                    share_url = f"{st.context.url}{share_query}"
+                    st.link_button("Open share link ↗", share_url, width="stretch")
+                    st.caption("Keeps this catalogue gadget, region and theme.")
+                else:
+                    st.caption("Custom scenarios cannot be reopened from a link yet. Save or download this assessment instead.")
+            if shareable_product_id:
+                with st.expander("Copy a link to this assessment"):
+                    st.caption("Send this full URL to reopen the same catalogue assessment.")
+                    st.code(share_url, language=None, wrap_lines=True)
 
 
 with compare:
@@ -530,7 +589,7 @@ with compare:
             )
             report_records.append(saved_record(compared_values, compared_result))
         comparison = pd.DataFrame(comparison_records).set_index("Product").sort_values("Eco score", ascending=False)
-        st.dataframe(comparison, width="stretch")
+        render_data_table(comparison.reset_index(), height=280, min_width=980, aria_label="Gadget comparison")
         chart_data = comparison.reset_index()
         compare_chart = (
             alt.Chart(chart_data)
@@ -562,7 +621,15 @@ with saved:
         for item in st.session_state.saved_gadgets:
             st.markdown(f'<div class="saved-card"><strong>{html.escape(item["product"])}</strong><br><span>{html.escape(item["category"])} · eco score {item["eco_score"]:.1f} ({item["score_low"]:.0f}–{item["score_high"]:.0f}) · confidence {item["confidence"]}% · {html.escape(item["source"])}</span></div>', unsafe_allow_html=True)
         table_columns = ["product", "category", "eco_score", "score_low", "score_high", "lifecycle_carbon", "annual_energy", "confidence", "source"]
-        st.dataframe(shortlist[table_columns], hide_index=True, width="stretch")
+        shortlist_view = shortlist[table_columns].rename(
+            columns={
+                "product": "Product", "category": "Category", "eco_score": "Eco score",
+                "score_low": "Likely low", "score_high": "Likely high",
+                "lifecycle_carbon": "Lifecycle kg CO₂e", "annual_energy": "Annual energy kWh",
+                "confidence": "Confidence", "source": "Source",
+            }
+        )
+        render_data_table(shortlist_view, height=300, min_width=980, aria_label="Saved gadget shortlist")
         s1, s2, s3 = st.columns(3)
         with s1:
             st.download_button("Download shortlist CSV", shortlist.to_csv(index=False).encode(), "luma-shortlist.csv", "text/csv", width="stretch")
@@ -602,15 +669,16 @@ The score range combines each category model's 90th-percentile holdout error wit
         st.markdown("#### Snapshot quality")
         quality_frame = pd.DataFrame([{"Level": key, "Records": value} for key, value in metadata.get("data_quality", {}).items()])
         freshness_frame = pd.DataFrame([{"Freshness": key, "Records": value} for key, value in metadata.get("freshness", {}).items()])
-        st.dataframe(quality_frame, hide_index=True, width="stretch")
-        st.dataframe(freshness_frame, hide_index=True, width="stretch")
+        render_data_table(quality_frame, height=220, min_width=420, aria_label="Data quality summary")
+        render_data_table(freshness_frame, height=220, min_width=420, aria_label="Data freshness summary")
         st.caption(f"Schema {metadata.get('schema_version')} · snapshot {metadata.get('snapshot_id')} · {metadata.get('duplicate_evidence_records', 0):,} records belong to multi-source evidence groups")
     with d2:
         st.markdown("#### Model calibration")
         category_rows = []
         for category, metrics in model_metrics.get("categories", {}).items():
             category_rows.append({"Category": category, "MAE": metrics.get("mae"), "P90 error": metrics.get("p90_absolute_error"), "R²": metrics.get("r2")})
-        st.dataframe(pd.DataFrame(category_rows).sort_values("Category") if category_rows else pd.DataFrame(), hide_index=True, width="stretch", height=300)
+        calibration_frame = pd.DataFrame(category_rows).sort_values("Category") if category_rows else pd.DataFrame()
+        render_data_table(calibration_frame, height=300, min_width=560, aria_label="Model calibration metrics")
     st.markdown("#### Current sources")
     for source in metadata.get("sources", []):
         st.markdown(
