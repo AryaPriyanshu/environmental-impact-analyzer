@@ -19,6 +19,7 @@ from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, fea
 
 
 ROOT = Path(__file__).parent
+CATALOG_PREVIEW_LIMIT = 300
 st.set_page_config(
     page_title="Luma · Gadget impact intelligence",
     page_icon="◌",
@@ -389,7 +390,7 @@ with explore:
     st.markdown(f'<div class="result-count"><strong>{len(browse):,} matching records</strong><span>{browse.manufacturer.nunique():,} manufacturers · snapshot {metadata["snapshot_id"]}</span></div>', unsafe_allow_html=True)
     columns = ["manufacturer", "name", "model_number", "category", "source_name", "market_date", "annual_energy_kwh", "repairability", "data_quality", "freshness_status", "source_url"]
     available_columns = [column for column in columns if column in browse]
-    view = browse[available_columns].head(1200).rename(
+    view = browse[available_columns].head(CATALOG_PREVIEW_LIMIT).rename(
         columns={
             "manufacturer": "Manufacturer", "name": "Model", "model_number": "Model number", "category": "Category",
             "source_name": "Data source", "market_date": "Market / index date", "annual_energy_kwh": "Annual energy (kWh)",
@@ -397,8 +398,8 @@ with explore:
         }
     )
     render_data_table(view, height=520, min_width=1180, link_columns={"Source"}, aria_label="Filtered gadget records")
-    if len(browse) > 1200:
-        st.caption("Showing the first 1,200 matches. Refine the search or download the full filtered result set.")
+    if len(browse) > CATALOG_PREVIEW_LIMIT:
+        st.caption(f"Showing the first {CATALOG_PREVIEW_LIMIT:,} matches. Refine the search or download the full filtered result set.")
     st.download_button("Download filtered records", browse.to_csv(index=False).encode(), "luma-gadget-data-filtered.csv", "text/csv")
 
 
