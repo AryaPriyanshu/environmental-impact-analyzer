@@ -13,9 +13,17 @@ import joblib
 import pandas as pd
 import streamlit as st
 
+from src.device_search import (
+    POPULAR_SEARCHES,
+    diversify_ranked_results,
+    infer_device_identity,
+    merge_consumer_identities,
+    prepare_catalog_search,
+    search_catalog_frame,
+)
 from src.reporting import assessment_pdf, comparison_pdf
 from src.train_model import FEATURES
-from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, impact_category, recommendations
+from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, impact_category, recommendations
 
 
 ROOT = Path(__file__).parent
@@ -34,10 +42,22 @@ def _query_value(key: str, fallback: str = "") -> str:
     return value[-1] if isinstance(value, list) and value else str(value or fallback)
 
 
+query_theme = _query_value("theme")
 if "ui_theme" not in st.session_state:
-    st.session_state.ui_theme = "dark" if _query_value("theme", "light") == "dark" else "light"
+    st.session_state.ui_theme = query_theme if query_theme in {"light", "dark"} else "light"
+elif query_theme in {"light", "dark"} and query_theme != st.session_state.ui_theme:
+    # A shared URL is authoritative when it changes in an existing session.
+    st.session_state.ui_theme = query_theme
+    st.session_state.theme_control = query_theme == "dark"
 if "saved_gadgets" not in st.session_state:
     st.session_state.saved_gadgets = []
+
+
+def _apply_theme_change() -> None:
+    """Apply a theme toggle before the next render without a second forced rerun."""
+    requested_theme = "dark" if st.session_state.get("theme_control", False) else "light"
+    st.session_state.ui_theme = requested_theme
+    st.query_params["theme"] = requested_theme
 
 THEME = st.session_state.ui_theme
 DARK = THEME == "dark"
@@ -104,9 +124,9 @@ button[kind="secondary"]{background:var(--card2)!important;border-color:var(--li
 .stTabs > div > div:has(> [data-baseweb="tab-list"]){position:sticky;top:.55rem;z-index:100}.stTabs [data-baseweb="tab-list"]{position:relative;gap:.25rem;padding:.36rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:1rem;overflow-x:auto;box-shadow:0 12px 32px rgba(0,0,0,.16);backdrop-filter:blur(16px)}.stTabs [data-baseweb="tab"]{padding:.55rem .88rem;color:var(--muted);border-radius:10px;transition:background .2s ease,color .2s ease,transform .2s ease}.stTabs [data-baseweb="tab"]:hover{background:var(--mint);color:var(--green);transform:translateY(-1px)}.stTabs [aria-selected="true"]{color:var(--green)!important;background:var(--card2)!important;box-shadow:0 5px 14px rgba(24,72,45,.08)}.stTabs [data-baseweb="tab"] p{color:inherit!important;white-space:nowrap}
 .stTabs [data-baseweb="tab-highlight"]{display:none}
 .stTextInput input,.stNumberInput input,[data-baseweb="select"]>div,.stMultiSelect [data-baseweb="select"]>div{border-radius:11px!important;background:var(--card)!important;color:var(--ink)!important;border-color:var(--line)!important}.stTextInput input::placeholder,.stNumberInput input::placeholder,[data-baseweb="select"] input::placeholder{color:var(--muted)!important;opacity:1!important}[data-baseweb="select"] div{color:var(--ink)!important}[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:var(--card)!important;border:1px solid var(--line)!important}[role="option"]{background:var(--card)!important;color:var(--ink)!important}[role="option"]:hover,[role="option"][aria-selected="true"]{background:var(--mint)!important}.stTextInput input:focus,.stNumberInput input:focus,[data-baseweb="select"]>div:focus-within{border-color:var(--bright)!important;box-shadow:0 0 0 3px rgba(76,221,147,.13)!important}[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 8px 28px rgba(25,60,39,.05)}[data-testid="stExpander"]{background:var(--card);border-color:var(--line)!important;border-radius:14px!important}[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.8rem}
-[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p,[data-testid="stRadio"] label p,[data-testid="stCheckbox"] label p{color:var(--ink)!important;opacity:1!important}[data-testid="stMetricLabel"] p{color:var(--muted)!important;opacity:1!important}.stAlert{border-radius:14px}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p,[data-testid="stRadio"] label p,[data-testid="stCheckbox"] label p{color:var(--ink)!important;opacity:1!important}[data-testid="stMetricLabel"] p{color:var(--muted)!important;opacity:1!important}.stAlert{border-radius:14px;background:var(--card2)!important;border:1px solid var(--line)!important}.stAlert p,.stAlert div{color:var(--ink)!important;opacity:1!important}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .data-table-shell{width:100%;max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--table-bg);box-shadow:0 12px 34px rgba(0,0,0,.18);scrollbar-color:var(--green) var(--table-bg);scrollbar-width:thin;-webkit-overflow-scrolling:touch}.data-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:var(--table-bg);color:var(--table-ink);font-size:.76rem;line-height:1.35}.data-table th{position:sticky;top:0;z-index:2;padding:.72rem .7rem;background:var(--table-head);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;font-weight:750}.data-table td{max-width:290px;padding:.65rem .7rem;background:var(--table-bg);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.data-table tbody tr:nth-child(even) td{background:var(--table-alt)}.data-table tbody tr:hover td{background:var(--mint);color:var(--ink)}.data-table th:last-child,.data-table td:last-child{border-right:0}.data-table a{color:var(--green);font-weight:750;text-decoration:none}.data-table a:hover{text-decoration:underline}
-@media(max-width:1080px){.device-scene{right:-4%;opacity:.58}.hero-content{max-width:72%}.kpi-grid{grid-template-columns:1fr}.kpi{min-height:112px}.method-flow{grid-template-columns:1fr}.flow-arrow{transform:rotate(90deg);text-align:center}}
+@media(max-width:1080px){.device-scene{right:-4%;opacity:.58}.hero-content{max-width:72%}.score-card{flex-direction:column;text-align:center}.score-copy{display:flex;flex-direction:column;align-items:center}.kpi-grid{grid-template-columns:1fr}.kpi{min-height:112px}.method-flow{grid-template-columns:1fr}.flow-arrow{transform:rotate(90deg);text-align:center}}
 @media(min-width:761px){[data-testid="stHorizontalBlock"]:has(.top-brand){margin-top:1.65rem}}
 @media(max-width:760px){.block-container{padding:.75rem .82rem 2.4rem}.brand-note{display:none}.hero{min-height:auto;padding:2rem 1.35rem;border-radius:23px}.hero-content{max-width:100%}.hero h1{font-size:2.55rem}.hero p{font-size:.92rem;max-width:88%}.device-scene{right:-126px;top:46%;opacity:.22}.statbar{gap:.42rem}.stat{min-width:calc(50% - .25rem);padding:.58rem .65rem}.signal-strip{grid-template-columns:1fr;gap:.5rem}.signal-card{padding:.72rem .8rem}.stTabs > div > div:has(> [data-baseweb="tab-list"]){position:static}.stTabs [data-baseweb="tab-list"]{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));position:static;overflow:visible;gap:.3rem}.stTabs [data-baseweb="tab"]{justify-content:center;padding:.48rem .42rem;min-width:0}.stTabs [data-baseweb="tab"] p{font-size:.68rem!important;white-space:normal;text-align:center;line-height:1.25}.score-card{flex-direction:column;text-align:center}.score-copy{display:flex;flex-direction:column;align-items:center}.kpi-grid{grid-template-columns:1fr;gap:.5rem}.kpi{min-height:108px}.result-count{align-items:flex-start;flex-direction:column;gap:.2rem}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
@@ -129,7 +149,9 @@ st.markdown(css, unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False)
 def load_data():
-    catalog = pd.read_csv(ROOT / "data" / "official_gadgets.csv", low_memory=False)
+    catalog = prepare_catalog_search(
+        merge_consumer_identities(pd.read_csv(ROOT / "data" / "official_gadgets.csv", low_memory=False))
+    )
     metadata = json.loads((ROOT / "data" / "source_metadata.json").read_text())
     grid = pd.read_csv(ROOT / "data" / "grid_intensity.csv")
     repairs = pd.read_csv(ROOT / "data" / "repair_profiles.csv")
@@ -169,19 +191,23 @@ def product_label(row: pd.Series) -> str:
     return f"{row['manufacturer']} · {row['name']} · {row['model_number']} · {suffix}"
 
 
-def search_catalog(query: str, categories: list[str], sources: list[str], brands: list[str] | None = None, primary_only: bool = False) -> pd.DataFrame:
-    frame = catalog[catalog["category"].isin(categories) & catalog["source_name"].isin(sources)]
-    if primary_only and "is_primary_record" in frame:
-        frame = frame[frame["is_primary_record"].map(_bool)]
-    if brands:
-        frame = frame[frame["manufacturer"].isin(brands)]
-    terms = query.casefold().split()
-    if terms:
-        haystack = (frame["manufacturer"].fillna("") + " " + frame["name"].fillna("") + " " + frame["model_number"].fillna("")).str.casefold()
-        for term in terms:
-            mask = haystack.str.contains(term, regex=False)
-            frame, haystack = frame[mask], haystack[mask]
-    return frame
+def search_catalog(
+    query: str,
+    categories: list[str] | None = None,
+    sources: list[str] | None = None,
+    brands: list[str] | None = None,
+    primary_only: bool = False,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    return search_catalog_frame(
+        catalog,
+        query,
+        categories=categories,
+        sources=sources,
+        manufacturers=brands,
+        primary_only=primary_only,
+        limit=limit,
+    )
 
 
 def _table_value(value) -> str:
@@ -227,9 +253,10 @@ def render_data_table(
 def product_values(row: pd.Series) -> dict:
     values = row.to_dict()
     defaults = feature_defaults(values["category"])
+    daily_hours = 24.0 if values["category"] == "Router / network" else 6.0 if values["category"] in {"Laptop", "Desktop", "Monitor"} else 5.0
     default_fields = {
         **defaults,
-        "daily_hours": 5.0,
+        "daily_hours": daily_hours,
         "repairability": 5.0,
         "recyclability_pct": 65.0,
         "recycled_content_pct": 20.0,
@@ -261,15 +288,37 @@ def assess(values: dict):
 
 
 def provenance(values: dict) -> list[tuple[str, str]]:
+    override_axes = {str(axis) for axis in values.get("override_axes", [])}
+
+    def evidence_state(axis: str, observed: bool) -> str:
+        return "Scenario override" if axis in override_axes else "Observed" if observed else "Estimated"
+
     return [
-        ("Product identity", "Observed" if values.get("catalog_product") else "Scenario"),
-        ("Energy", "Observed" if values.get("observed_energy") else "Estimated"),
-        ("Repairability", "Observed" if values.get("observed_repairability") else "Estimated"),
+        ("Product identity", "Observed" if values.get("catalog_product") else "Inferred" if values.get("identity_confidence") in {"High", "Moderate"} else "Scenario"),
+        ("Energy", evidence_state("energy", bool(values.get("observed_energy")))),
+        ("Repairability", evidence_state("repairability", bool(values.get("observed_repairability")))),
         ("Lifecycle carbon", "Observed" if values.get("observed_carbon") else "Estimated"),
-        ("Battery", "Observed" if values.get("observed_battery") else "Estimated"),
+        ("Battery", evidence_state("battery", bool(values.get("observed_battery")))),
         ("Durability", "Observed" if values.get("observed_durability") else "Estimated"),
         ("Materials & transport", "Scenario"),
     ]
+
+
+def _changed(original, current, tolerance: float = 1e-8) -> bool:
+    try:
+        return abs(float(original) - float(current)) > tolerance
+    except (TypeError, ValueError):
+        return original != current
+
+
+def _mark_override(values: dict, axis: str, *, invalidated_observation: bool = False) -> None:
+    axes = {str(item) for item in values.get("override_axes", [])}
+    axes.add(axis)
+    values["override_axes"] = sorted(axes)
+    if invalidated_observation:
+        invalidated = {str(item) for item in values.get("invalidated_observed_axes", [])}
+        invalidated.add(axis)
+        values["invalidated_observed_axes"] = sorted(invalidated)
 
 
 def factor_chart(result) -> alt.Chart:
@@ -307,6 +356,52 @@ def saved_record(values: dict, result) -> dict:
     }
 
 
+def unlisted_device_values(name: str, manufacturer: str, category: str, identity_confidence: str) -> dict:
+    """Create an explicit category-level scenario for any named device."""
+    defaults = feature_defaults(category)
+    daily_hours = 24.0 if category == "Router / network" else 6.0 if category in {"Laptop", "Desktop", "Monitor"} else 5.0
+    return {
+        "name": name.strip() or "Unlisted gadget",
+        "model_number": name.strip() or "Unlisted gadget",
+        "manufacturer": manufacturer.strip() or "Unknown",
+        "category": category,
+        "source_name": f"{category} baseline estimate",
+        "source_url": "",
+        "source_type": "scenario",
+        "market_date": "",
+        "observed_energy": False,
+        "observed_repairability": False,
+        "observed_carbon": False,
+        "observed_battery": False,
+        "observed_durability": False,
+        "observed_software_support": False,
+        "observed_field_count": 0,
+        "annual_energy_kwh": None,
+        **defaults,
+        "daily_hours": daily_hours,
+        "grid_profile": "Average",
+        "grid_kg_co2_per_kwh": 0.42,
+        "repairability": 5.0,
+        "recyclability_pct": 65.0,
+        "recycled_content_pct": 20.0,
+        "replaceable_battery": False,
+        "transport_km": 7000.0,
+        "catalog_product": False,
+        "resolution_status": "category_estimate" if category != "Other" else "generic_estimate",
+        "identity_confidence": identity_confidence,
+    }
+
+
+def _switch_to_unlisted_estimate(name: str) -> None:
+    st.session_state.analysis_input_mode = "Any device estimate"
+    st.session_state.unlisted_device_name = name
+
+
+def _switch_to_catalog_search(name: str) -> None:
+    st.session_state.analysis_input_mode = "Search catalogue"
+    st.session_state.analysis_search = name
+
+
 def best_peers(values: dict, limit: int = 3) -> list[tuple[dict, object]]:
     pool = catalog[(catalog["category"] == values["category"]) & (catalog["product_id"] != values.get("product_id", ""))].copy()
     if "is_primary_record" in pool:
@@ -331,28 +426,23 @@ brand_column, theme_column = st.columns([5, 1])
 with brand_column:
     st.markdown('<div class="top-brand"><span class="brand-orb"></span><span class="brand-name">LUMA</span><span class="brand-note">Environmental intelligence for the technology you keep</span></div>', unsafe_allow_html=True)
 with theme_column:
-    requested_dark = st.toggle("Dark mode", value=DARK, key="theme_control")
-    requested_theme = "dark" if requested_dark else "light"
-    if requested_theme != THEME:
-        st.session_state.ui_theme = requested_theme
-        st.query_params["theme"] = requested_theme
-        st.rerun()
+    st.toggle("Dark mode", value=DARK, key="theme_control", on_change=_apply_theme_change)
 if _query_value("theme") != THEME:
     st.query_params["theme"] = THEME
 
 
 category_count = catalog["category"].nunique()
-manufacturer_count = catalog["manufacturer"].nunique()
-unique_entities = metadata.get("unique_entities", len(catalog))
+manufacturer_count = catalog["_search_manufacturer"].nunique()
+unique_entities = catalog["entity_key"].nunique() if "entity_key" in catalog else len(catalog)
 hero_markup = f"""
     <section class="hero">
       <div class="hero-content">
         <div class="eyebrow">Evidence-first gadget intelligence</div>
         <h1>See the impact behind every device.</h1>
         <p>Search real product records, personalise how a gadget is used, and understand the evidence and uncertainty behind every AI-assisted score.</p>
-        <div class="badges"><span class="badge">Regulatory data</span><span class="badge">Category-aware neural models</span><span class="badge">Regional energy</span><span class="badge">Explainable uncertainty</span></div>
+        <div class="badges"><span class="badge">Global device search</span><span class="badge">Regulatory data</span><span class="badge">Category-aware neural models</span><span class="badge">Any-device estimates</span><span class="badge">Explainable uncertainty</span></div>
         <div class="statbar">
-          <div class="stat"><b>{len(catalog):,}</b><span>source records</span></div>
+          <div class="stat"><b>{len(catalog):,}</b><span>catalog records</span></div>
           <div class="stat"><b>{unique_entities:,}</b><span>resolved gadgets</span></div>
           <div class="stat"><b>{manufacturer_count:,}</b><span>manufacturers</span></div>
           <div class="stat"><b>{len(grid_data):,}</b><span>regional grid profiles</span></div>
@@ -387,7 +477,8 @@ with explore:
         browse_sources = st.multiselect("Sources", sorted(catalog["source_name"].unique()), default=sorted(catalog["source_name"].unique()), key="browse_sources")
     primary_only = st.toggle("One primary record per resolved model", value=True, help="Complementary records remain in the downloadable snapshot.")
     browse = search_catalog(browse_query, browse_categories, browse_sources, primary_only=primary_only)
-    st.markdown(f'<div class="result-count"><strong>{len(browse):,} matching records</strong><span>{browse.manufacturer.nunique():,} manufacturers · snapshot {metadata["snapshot_id"]}</span></div>', unsafe_allow_html=True)
+    browse_manufacturer_count = browse["_search_manufacturer"].nunique() if "_search_manufacturer" in browse else browse.manufacturer.nunique()
+    st.markdown(f'<div class="result-count"><strong>{len(browse):,} matching records</strong><span>{browse_manufacturer_count:,} manufacturers · snapshot {metadata["snapshot_id"]}</span></div>', unsafe_allow_html=True)
     columns = ["manufacturer", "name", "model_number", "category", "source_name", "market_date", "annual_energy_kwh", "repairability", "data_quality", "freshness_status", "source_url"]
     available_columns = [column for column in columns if column in browse]
     view = browse[available_columns].head(CATALOG_PREVIEW_LIMIT).rename(
@@ -400,7 +491,8 @@ with explore:
     render_data_table(view, height=520, min_width=1180, link_columns={"Source"}, aria_label="Filtered gadget records")
     if len(browse) > CATALOG_PREVIEW_LIMIT:
         st.caption(f"Showing the first {CATALOG_PREVIEW_LIMIT:,} matches. Refine the search or download the full filtered result set.")
-    st.download_button("Download filtered records", browse.to_csv(index=False).encode(), "luma-gadget-data-filtered.csv", "text/csv")
+    export_columns = [column for column in browse.columns if not column.startswith("_search") and column != "search_aliases"]
+    st.download_button("Download filtered records", browse[export_columns].to_csv(index=False).encode(), "luma-gadget-data-filtered.csv", "text/csv")
 
 
 with analyse:
@@ -409,46 +501,148 @@ with analyse:
     with controls:
         st.subheader("Build an assessment")
         linked_product = _query_value("product")
+        linked_region_query = _query_value("region")
         linked_row = catalog[catalog["product_id"].astype(str).eq(linked_product)] if linked_product else pd.DataFrame()
-        default_mode = "Official record" if linked_product else "Official record"
-        mode = st.radio("Input", ["Official record", "Custom scenario"], horizontal=True, index=0 if default_mode == "Official record" else 1)
-        if mode == "Official record":
-            categories = sorted(catalog["category"].unique())
-            linked_category = linked_row.iloc[0]["category"] if len(linked_row) else None
-            category_index = categories.index(linked_category) if linked_category in categories else 0
-            selected_category = st.selectbox("Category", categories, index=category_index, key="analysis_category")
-            subset = catalog[catalog["category"].eq(selected_category)]
-            brands = st.multiselect("Manufacturer", sorted(subset["manufacturer"].unique()), placeholder="All manufacturers", key="analysis_brands")
-            initial_query = ""
-            if len(linked_row) and linked_row.iloc[0]["category"] == selected_category:
-                initial_query = str(linked_row.iloc[0]["model_number"])
-            query = st.text_input("Search model", value=initial_query, placeholder="Type a model name or number", key="analysis_search")
-            matches = search_catalog(query, [selected_category], sorted(catalog["source_name"].unique()), brands, primary_only=False).head(700)
-            if len(matches) == 0:
-                st.warning("No matching model. Try fewer words or clear the manufacturer filter.")
+        if linked_product and st.session_state.get("_linked_product_seen") != linked_product:
+            st.session_state._linked_product_seen = linked_product
+            st.session_state.analysis_input_mode = "Search catalogue"
+            if len(linked_row):
+                st.session_state.analysis_search = str(linked_row.iloc[0]["model_number"])
+            st.session_state.analysis_categories = []
+            st.session_state.analysis_brands = []
+        elif not linked_product:
+            st.session_state._linked_product_seen = ""
+        available_region_names = set(grid_data["region"].dropna().astype(str)) | {"Custom intensity"}
+        if linked_region_query in available_region_names and st.session_state.get("_linked_region_seen") != linked_region_query:
+            st.session_state._linked_region_seen = linked_region_query
+            st.session_state.pop("analysis_region", None)
+        mode = st.radio(
+            "Input",
+            ["Search catalogue", "Any device estimate"],
+            horizontal=True,
+            key="analysis_input_mode",
+            help="Search all categories at once, or estimate a device that has no verified catalog record.",
+        )
+        if mode == "Search catalogue":
+            query = st.text_input(
+                "Search any device",
+                placeholder="MacBook, iPhone 16, Galaxy S25, model number…",
+                key="analysis_search",
+            )
+            st.caption("Searches every category and manufacturer. Try: " + " · ".join(POPULAR_SEARCHES[:6]))
+            with st.expander("Optional search filters"):
+                filter_categories = st.multiselect(
+                    "Categories",
+                    sorted(catalog["category"].unique()),
+                    placeholder="All categories",
+                    key="analysis_categories",
+                )
+                manufacturer_options = sorted(
+                    {
+                        min(group.astype(str), key=lambda value: (value.isupper(), len(value), value))
+                        for _, group in catalog.groupby("_search_manufacturer")["manufacturer"]
+                    },
+                    key=str.casefold,
+                )
+                filter_brands = st.multiselect(
+                    "Manufacturers",
+                    manufacturer_options,
+                    placeholder="All manufacturers",
+                    key="analysis_brands",
+                )
+            if query.strip():
+                all_matches = search_catalog(
+                    query,
+                    filter_categories,
+                    None,
+                    filter_brands,
+                    primary_only=True,
+                )
+                matches = diversify_ranked_results(all_matches, 120)
+                if len(all_matches) == 0:
+                    st.warning(f'No verified record matched “{query}”. You can still assess it using transparent category assumptions.')
+                    st.button(
+                        f'Estimate “{query}”',
+                        type="primary",
+                        width="stretch",
+                        on_click=_switch_to_unlisted_estimate,
+                        args=(query,),
+                    )
+                else:
+                    category_counts = all_matches["category"].value_counts()
+                    categories_found = " · ".join(f"{category} {count:,}" for category, count in category_counts.head(5).items())
+                    visible_note = f" · showing {len(matches):,} diverse candidates" if len(all_matches) > len(matches) else ""
+                    st.caption(f"{len(all_matches):,} matches · {categories_found}{visible_note}")
+                    labels = [(product_label(row), index) for index, row in matches.iterrows()]
+                    label_names = [item[0] for item in labels]
+                    linked_index = next(
+                        (
+                            position
+                            for position, (_, row_index) in enumerate(labels)
+                            if str(catalog.loc[row_index, "product_id"]) == linked_product
+                        ),
+                        0,
+                    )
+                    selected_label = st.selectbox(
+                        "Best matching records",
+                        label_names,
+                        index=linked_index,
+                        help="Results rank exact names and identifiers first, then aliases and cautious typo matches.",
+                    )
+                    selected_index = dict(labels)[selected_label]
+                    values = product_values(catalog.loc[selected_index])
+                    values["resolution_status"] = "catalog_match" if has_product_environmental_evidence(values) else "verified_identity_estimate"
+                    with st.expander("Device not shown?"):
+                        st.caption("Keep the name you entered and create a clearly labelled category-level estimate.")
+                        st.button(
+                            f'Estimate “{query}” instead',
+                            width="stretch",
+                            on_click=_switch_to_unlisted_estimate,
+                            args=(query,),
+                            key="estimate_instead",
+                        )
             else:
-                labels = [(product_label(row), index) for index, row in matches.iterrows()]
-                label_names = [item[0] for item in labels]
-                linked_index = next((position for position, (_, row_index) in enumerate(labels) if str(catalog.loc[row_index, "product_id"]) == linked_product), 0)
-                selected_label = st.selectbox("Matching product", label_names, index=linked_index, help="Type inside this selector for instant filtering.")
-                selected_index = dict(labels)[selected_label]
-                values = product_values(catalog.loc[selected_index])
+                st.info("Enter a product family, retail name, model number or manufacturer. You no longer need to choose its category first.")
         else:
-            selected_category = st.selectbox("Category", list(CATEGORY_BASELINES), key="custom_category")
-            defaults = feature_defaults(selected_category)
-            values = {
-                "name": st.text_input("Model name", "Custom gadget"), "model_number": "Custom",
-                "manufacturer": st.text_input("Manufacturer", "Unknown"), "category": selected_category,
-                "source_name": "User scenario", "source_url": "", "source_type": "scenario", "market_date": "",
-                "observed_energy": False, "observed_repairability": False, "observed_carbon": False,
-                "observed_battery": False, "observed_durability": False, "observed_software_support": False,
-                "observed_field_count": 0, "annual_energy_kwh": None, **defaults, "daily_hours": 5.0,
-                "grid_profile": "Average", "grid_kg_co2_per_kwh": 0.42, "repairability": 5.0,
-                "recyclability_pct": 65.0, "recycled_content_pct": 20.0, "replaceable_battery": False,
-                "transport_km": 7000.0, "catalog_product": False,
-            }
+            if "unlisted_device_name" not in st.session_state:
+                st.session_state.unlisted_device_name = ""
+            fallback_name = st.text_input(
+                "Device or model name",
+                placeholder="Any phone, laptop, wearable, console or gadget",
+                key="unlisted_device_name",
+            )
+            inferred = infer_device_identity(fallback_name)
+            if st.session_state.get("_identity_seed") != fallback_name:
+                st.session_state._identity_seed = fallback_name
+                st.session_state.unlisted_manufacturer = inferred["manufacturer"]
+                st.session_state.unlisted_category = inferred["category"]
+            selected_category = st.selectbox("Device category", list(CATEGORY_BASELINES), key="unlisted_category")
+            fallback_manufacturer = st.text_input("Manufacturer", key="unlisted_manufacturer")
+            if fallback_name.strip():
+                verified_hints = search_catalog(fallback_name, primary_only=True, limit=3)
+                if len(verified_hints):
+                    st.info("Verified catalog matches exist for this name. You can return to catalog search for stronger evidence.")
+                    st.button(
+                        "Show verified matches",
+                        width="stretch",
+                        on_click=_switch_to_catalog_search,
+                        args=(fallback_name,),
+                    )
+                if selected_category == "Other":
+                    st.warning("Choose the closest category if possible. Generic electronics estimates have the widest uncertainty.")
+                values = unlisted_device_values(
+                    fallback_name,
+                    fallback_manufacturer,
+                    selected_category,
+                    inferred["identity_confidence"],
+                )
+                st.caption("No model-specific facts are assumed. Category defaults remain editable below and are labelled as estimates.")
+            else:
+                st.info("Type any device name. The app will suggest a manufacturer and category, then expose every assumption.")
 
         if values is not None:
+            values.setdefault("override_axes", [])
+            values.setdefault("invalidated_observed_axes", [])
             st.markdown("#### Your context")
             regions = sorted(grid_data["region"].dropna().unique().tolist())
             linked_region = _query_value("region", "India")
@@ -464,20 +658,39 @@ with analyse:
             values["grid_kg_co2_per_kwh"] = grid_factor
             st.caption(f"{grid_factor * 1000:,.0f} g CO₂e/kWh · {grid_year} electricity data")
             values["daily_hours"] = st.slider("Daily active use", 0.5, 24.0, float(values.get("daily_hours", 5.0)), 0.5)
-            values["lifespan_years"] = st.slider("Expected ownership", 1.0, 18.0, float(values["lifespan_years"]), 0.5)
+            values["lifespan_years"] = st.slider("Expected ownership", 1.0, 18.0, float(values["lifespan_years"]), 0.1)
             if values.get("observed_energy") and not _missing(values.get("annual_energy_kwh")):
                 use_certified = st.toggle("Use published annual energy", value=True, help="Turn off to calculate energy from active power and your daily-use setting.")
                 if not use_certified:
                     values["annual_energy_kwh"] = None
+                    values["observed_energy"] = False
+                    _mark_override(values, "energy", invalidated_observation=True)
             with st.expander("Advanced lifecycle assumptions"):
                 st.caption("Changing a sourced field creates a scenario override; the original source remains linked below.")
                 values["manufacturing_kg"] = st.number_input("Manufacturing carbon (kg CO₂e)", 0.0, 5000.0, float(values["manufacturing_kg"]))
-                values["active_power_w"] = st.number_input("Active power (W)", 0.01, 5000.0, float(values["active_power_w"]))
-                values["repairability"] = st.slider("Repairability", 0.0, 10.0, float(values["repairability"]), 0.1)
+                original_power = values["active_power_w"]
+                power_was_observed = bool(values.get("observed_energy"))
+                values["active_power_w"] = st.number_input("Active power (W)", 0.01, 5000.0, float(original_power))
+                if _changed(original_power, values["active_power_w"]) and values.get("catalog_product"):
+                    values["annual_energy_kwh"] = None
+                    values["observed_energy"] = False
+                    _mark_override(values, "energy", invalidated_observation=power_was_observed)
+                original_repairability = values["repairability"]
+                repairability_was_observed = bool(values.get("observed_repairability"))
+                values["repairability"] = st.slider("Repairability", 0.0, 10.0, float(original_repairability), 0.1)
+                if _changed(original_repairability, values["repairability"]) and values.get("catalog_product"):
+                    values["observed_repairability"] = False
+                    _mark_override(values, "repairability", invalidated_observation=repairability_was_observed)
                 values["recyclability_pct"] = st.slider("Recyclability (%)", 0.0, 100.0, float(values["recyclability_pct"]), 1.0)
                 values["recycled_content_pct"] = st.slider("Recycled content (%)", 0.0, 100.0, float(values["recycled_content_pct"]), 1.0)
-                values["battery_wh"] = st.number_input("Battery capacity (Wh)", 0.0, 2000.0, float(values["battery_wh"]))
-                values["replaceable_battery"] = st.checkbox("User-replaceable battery", bool(values["replaceable_battery"]))
+                original_battery = values["battery_wh"]
+                original_replaceable = bool(values["replaceable_battery"])
+                battery_was_observed = bool(values.get("observed_battery"))
+                values["battery_wh"] = st.number_input("Battery capacity (Wh)", 0.0, 2000.0, float(original_battery))
+                values["replaceable_battery"] = st.checkbox("User-replaceable battery", original_replaceable)
+                if (_changed(original_battery, values["battery_wh"]) or original_replaceable != values["replaceable_battery"]) and values.get("catalog_product"):
+                    values["observed_battery"] = False
+                    _mark_override(values, "battery", invalidated_observation=battery_was_observed)
                 values["weight_kg"] = st.number_input("Weight (kg)", 0.01, 500.0, float(values["weight_kg"]))
                 values["transport_km"] = st.number_input("Transport distance (km)", 0.0, 50000.0, float(values["transport_km"]))
 
@@ -487,15 +700,33 @@ with analyse:
     else:
         result = assess(values)
         with dashboard:
+            product_evidence = has_product_environmental_evidence(values)
+            if values.get("catalog_product") and product_evidence:
+                st.markdown(
+                    '<div class="callout"><b>Catalog-backed identity</b><br>This model name or identifier comes from a linked source. Individual lifecycle fields may still be estimated; see Evidence coverage below.</div>',
+                    unsafe_allow_html=True,
+                )
+            elif values.get("catalog_product"):
+                st.markdown(
+                    '<div class="callout warning"><b>Verified identity · category estimate</b><br>The product name is source-backed, but no model-specific environmental measurement is bundled. The score uses editable category assumptions and wider uncertainty.</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                estimate_scope = "category" if values.get("category") != "Other" else "generic electronics"
+                st.markdown(
+                    f'<div class="callout warning"><b>{html.escape(estimate_scope.title())} estimate · no verified model record</b><br>The name is user supplied and the result uses editable {html.escape(estimate_scope)} assumptions. It is not a measured footprint for this exact device.</div>',
+                    unsafe_allow_html=True,
+                )
             st.caption(f"{values['manufacturer']}  /  {values['category']}  /  {values.get('model_number', '')}")
             st.header(values["name"])
             score_color = "#2fd484" if result.eco_score >= 75 else "#63bd75" if result.eco_score >= 55 else "#e2a542" if result.eco_score >= 35 else "#e06c5d"
+            score_label = impact_category(result.eco_score) if product_evidence else "Category estimate" if values.get("category") != "Other" else "Generic estimate"
             score_left, score_right = st.columns([1.02, 2.15], gap="medium")
             with score_left:
                 st.markdown(
                     f"""
                     <div class="score-card"><div class="score-ring" style="--ring-target:{result.eco_score * 3.6:.1f}deg;--ring-color:{score_color}"><div class="score-value">{result.eco_score}<br><small>/ 100</small></div></div>
-                    <div class="score-copy"><b>Eco score</b><span>Likely {result.score_low:.0f}–{result.score_high:.0f}</span><span class="score-chip">{impact_category(result.eco_score)}</span></div></div>
+                    <div class="score-copy"><b>Eco score</b><span>Likely {result.score_low:.0f}–{result.score_high:.0f}</span><span class="score-chip">{score_label}</span></div></div>
                     """,
                     unsafe_allow_html=True,
                 )
@@ -531,7 +762,7 @@ with analyse:
                 tips = recommendations(values, result)
                 for tip in tips:
                     st.write(f"✓ {tip}")
-                peers = best_peers(values)
+                peers = best_peers(values) if product_evidence else []
                 if peers:
                     st.caption("Higher modeled peers, prioritising the strongest comparable source field")
                     for peer_values, peer_result in peers:
@@ -562,22 +793,28 @@ with analyse:
 
 
 with compare:
-    st.subheader("Compare like with like")
-    st.caption("The same regional grid and declared assumptions are used across every selected record.")
+    st.subheader("Compare devices")
+    st.caption("Search globally, then apply the same regional grid and declared assumptions across every selected record.")
     c1, c2 = st.columns([1, 1.4])
     with c1:
-        compare_category = st.selectbox("Product category", sorted(catalog["category"].unique()), key="compare_category")
+        compare_category = st.selectbox("Product category", ["All categories", *sorted(catalog["category"].unique())], key="compare_category")
     with c2:
-        compare_query = st.text_input("Filter candidates", placeholder="Manufacturer, model or identifier", key="compare_query")
-    compare_pool = search_catalog(compare_query, [compare_category], sorted(catalog["source_name"].unique()), primary_only=True).head(1000)
+        compare_query = st.text_input("Search candidates", placeholder="iPhone, MacBook, Galaxy, model number…", key="compare_query")
+    compare_categories = None if compare_category == "All categories" else [compare_category]
+    compare_all = search_catalog(compare_query, compare_categories, None, primary_only=True) if compare_query.strip() or compare_categories else catalog.iloc[0:0]
+    compare_pool = compare_all.head(1000)
+    if len(compare_all) > len(compare_pool):
+        st.caption(f"{len(compare_all):,} candidates match; showing the top {len(compare_pool):,}. Add a model or manufacturer to refine the list.")
     compare_labels = [(product_label(row), index) for index, row in compare_pool.iterrows()]
     chosen = st.multiselect("Select 2–5 records", [item[0] for item in compare_labels], max_selections=5, key="compare_selected")
     if len(chosen) >= 2:
         label_lookup = dict(compare_labels)
         comparison_records, report_records = [], []
+        compared_categories: set[str] = set()
         default_grid = float(grid_data[grid_data["region"].eq("India")]["kg_co2e_per_kwh"].iloc[-1]) if "India" in set(grid_data["region"]) else 0.42
         for label in chosen:
             compared_values = product_values(catalog.loc[label_lookup[label]])
+            compared_categories.add(str(compared_values["category"]))
             compared_values["grid_kg_co2_per_kwh"] = default_grid
             compared_result = assess(compared_values)
             comparison_records.append(
@@ -590,6 +827,8 @@ with compare:
             )
             report_records.append(saved_record(compared_values, compared_result))
         comparison = pd.DataFrame(comparison_records).set_index("Product").sort_values("Eco score", ascending=False)
+        if len(compared_categories) > 1:
+            st.warning("These devices serve different purposes. Compare the factor breakdowns, but do not treat the score order as a like-for-like buying recommendation.")
         render_data_table(comparison.reset_index(), height=280, min_width=980, aria_label="Gadget comparison")
         chart_data = comparison.reset_index()
         compare_chart = (
@@ -610,7 +849,7 @@ with compare:
         st.info(f"Highest modeled score here: **{comparison.index[0]}**. Overlapping score ranges mean the order is not conclusive.")
         st.download_button("Download comparison PDF", comparison_pdf(report_records), "luma-comparison.pdf", "application/pdf")
     else:
-        st.caption("Choose at least two records. Type a search term when the category has many models.")
+        st.caption("Choose at least two records. Search by a family, brand or identifier to narrow the list.")
 
 
 with saved:
@@ -646,7 +885,7 @@ with intelligence:
     st.subheader("AI, evidence and data quality")
     blended = model_metrics.get("blended", {})
     q1, q2, q3, q4 = st.columns(4)
-    q1.metric("Snapshot records", f"{len(catalog):,}")
+    q1.metric("Catalog records", f"{len(catalog):,}")
     q2.metric("Model scenarios", f"{model_metrics.get('samples', 0):,}")
     q3.metric("Holdout MAE", f"{blended.get('mae', 0):.2f} pts")
     q4.metric("Specialists", len(model_metrics.get("categories", {})))
@@ -654,8 +893,8 @@ with intelligence:
         """
         <div class="method-flow">
           <div class="flow-node">Public evidence<span>Registries, certification, repair and product reports</span></div><div class="flow-arrow">→</div>
-          <div class="flow-node">Transparent lifecycle ledger<span>72% of the modeled impact burden</span></div><div class="flow-arrow">+</div>
-          <div class="flow-node">Category-aware neural estimate<span>28%, with holdout error by category</span></div>
+          <div class="flow-node">Transparent lifecycle ledger<span>72–100% depending on evidence</span></div><div class="flow-arrow">+</div>
+          <div class="flow-node">Category-aware neural estimate<span>Up to 28%, reduced without product observations</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -663,13 +902,15 @@ with intelligence:
     st.markdown(
         """The global neural network learns broad nonlinear relationships, while specialist networks learn within-category patterns for phones, laptops, tablets, TVs and other device families. Training features are anchored to this snapshot's observed product distributions. The target remains a **disclosed physics-informed lifecycle ledger**, because no public dataset provides complete, comparable LCAs for every gadget.
 
-The score range combines each category model's 90th-percentile holdout error with evidence coverage. It is an honest sensitivity range—not a guarantee or regulatory declaration."""
+For catalog products with at least one environmental observation, the neural estimate contributes at most 28%. It drops to 12% for identity-only or unlisted records in a recognised category and to zero for generic ``Other`` devices. The score range combines model holdout error with evidence coverage and is widened for weakly evidenced devices. It is a sensitivity range—not a guarantee or regulatory declaration."""
     )
     d1, d2 = st.columns([1, 1])
     with d1:
         st.markdown("#### Snapshot quality")
-        quality_frame = pd.DataFrame([{"Level": key, "Records": value} for key, value in metadata.get("data_quality", {}).items()])
-        freshness_frame = pd.DataFrame([{"Freshness": key, "Records": value} for key, value in metadata.get("freshness", {}).items()])
+        quality_counts = catalog["data_quality"].fillna("Unclassified").value_counts().to_dict()
+        freshness_counts = catalog["freshness_status"].fillna("unknown").value_counts().to_dict()
+        quality_frame = pd.DataFrame([{"Level": key, "Records": value} for key, value in quality_counts.items()])
+        freshness_frame = pd.DataFrame([{"Freshness": key, "Records": value} for key, value in freshness_counts.items()])
         render_data_table(quality_frame, height=220, min_width=420, aria_label="Data quality summary")
         render_data_table(freshness_frame, height=220, min_width=420, aria_label="Data freshness summary")
         st.caption(f"Schema {metadata.get('schema_version')} · snapshot {metadata.get('snapshot_id')} · {metadata.get('duplicate_evidence_records', 0):,} records belong to multi-source evidence groups")
@@ -686,10 +927,15 @@ The score range combines each category model's 90th-percentile holdout error wit
             f'<div class="source-card"><a href="{html.escape(source["url"])}" target="_blank">{html.escape(source["name"])} ↗</a><span>{source.get("records", 0):,} relevant records · retrieved {html.escape(source.get("retrieved_at", "")[:10])} · {html.escape(source.get("license", "See source terms"))}</span></div>',
             unsafe_allow_html=True,
         )
+    st.markdown(
+        f'<div class="source-card"><a href="https://github.com/AryaPriyanshu/environmental-impact-analyzer" target="_blank">Reviewed consumer identity manifest ↗</a><span>{max(0, len(catalog) - metadata.get("record_count", len(catalog))):,} identity or corrected-variant records · reviewed 2026-08-24 · manufacturer pages linked; source terms apply</span></div>',
+        unsafe_allow_html=True,
+    )
     with st.expander("Limitations and responsible interpretation"):
         st.markdown(
             """
             - Most official product records publish one part of the lifecycle, not a complete LCA.
+            - Any device name can be assessed, but an absent model receives a clearly marked category or generic estimate—not invented product measurements.
             - Manufacturer footprints use report-specific configurations, geography, boundaries and assumptions.
             - Open Repair statistics are aggregated by brand and category; they are never presented as model-specific outcomes.
             - Electricity intensity changes over time and does not represent marginal electricity or every local tariff.

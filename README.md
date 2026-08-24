@@ -4,12 +4,14 @@
 
 Luma is an end-to-end environmental intelligence application for smartphones, laptops, tablets, TVs, monitors, desktops, printers, network equipment, watches, headphones, speakers, streaming devices and related electronics.
 
-It combines current public product records, a transparent lifecycle ledger, category-aware neural models, country-level electricity intensity and explicit uncertainty. It does **not** pretend that every public product record is a complete lifecycle assessment: observed fields, category estimates and user scenarios are marked separately.
+It combines current public product records, a transparent lifecycle ledger, category-aware neural models, country-level electricity intensity and explicit uncertainty. Search accepts familiar retail names, technical identifiers, aliases and cautious typo matches across every category. If a device is not present, Luma preserves the name and produces a visibly labelled category or generic estimate instead of inventing model-specific facts.
 
 ## What is included
 
-- **13,130 traceable source records** representing 13,126 resolved gadget entities from 604 manufacturers
-- Full-text model/manufacturer search, source/category filters and CSV export
+- **13,130 traceable public-source records**, plus a reviewed identity manifest for product families missing from reusable lifecycle feeds
+- **13,143 effective catalog records**, 13,139 resolved identities and 572 normalized manufacturer names in the bundled build
+- Global ranked search across all categories, with consumer aliases, spaced-name normalization, cautious typo recovery and CSV export
+- One-click assessment for any named device; unlisted products receive explicit category/generic assumptions and wider uncertainty
 - Smartphone and tablet coverage from the EU EPREL regulatory registry
 - Laptop, desktop, display, TV, printer and network-equipment energy records from ENERGY STAR
 - French regulatory repairability data and iFixit teardown scores
@@ -22,6 +24,7 @@ It combines current public product records, a transparent lifecycle ledger, cate
 - Shareable product/region/theme query state
 - Responsive animated interface with persistent, accessible light and dark modes
 - SQLite full-text catalogue, FastAPI service, health/metrics endpoints, Docker setup and automated refresh workflow
+- API resolution endpoint returning candidates, category/manufacturer facets and an honest fallback descriptor
 
 ## Interface
 
@@ -35,7 +38,7 @@ The interface respects `prefers-reduced-motion`. Dark mode persists in session s
 
 ## Data snapshot
 
-The bundled snapshot was generated on **2026-08-23**. Run the refresh command to rebuild it from the sources available at that time.
+The bundled source snapshot was generated on **2026-08-23**; the reviewed consumer-identity supplement was checked on **2026-08-24**. Run the refresh/build commands to regenerate the open-source data and derived search index.
 
 | Source | Raw/relevant records | What is observed |
 |---|---:|---|
@@ -44,6 +47,7 @@ The bundled snapshot was generated on **2026-08-23**. Run the refresh command to
 | [ENERGY STAR Televisions V9.x](https://data.energystar.gov/d/pd96-rr3d) | 180 | Identity, screen details, on-mode power and annual energy |
 | [ENERGY STAR Imaging Equipment](https://data.energystar.gov/d/t2v6-g4nf) | 2,745 | Identity, equipment type, sleep/standby power and dates |
 | [ENERGY STAR Large Network Equipment](https://data.energystar.gov/d/n8cx-m62r) | 96 | Enterprise router/switch identity and measured load power |
+| [ENERGY STAR UPC crosswalk](https://data.energystar.gov/d/8edu-y555) | refreshed during sync | Retail UPC aliases linked to ENERGY STAR product IDs; no environmental claim added |
 | [EU EPREL smartphones and tablets](https://eprel.ec.europa.eu/screen/product/smartphonestablets20231669) | 2,358 | Identity, energy class, repairability, durability, battery endurance/cycles and software support |
 | [French Repairability Index](https://www.data.gouv.fr/datasets/fichiers-consolides-des-donnees-respectant-le-schema-indice-de-reparabilite) | 3,416 relevant | Submitted model identity and regulatory repairability score |
 | [iFixit smartphone scores](https://fr.ifixit.com/reparabilite/indices-smartphone) | 155 | Model identity, release year and independent teardown score |
@@ -55,15 +59,16 @@ Normalized catalogue categories:
 
 | Category | Records | Category | Records |
 |---|---:|---|---:|
-| Laptop | 4,629 | Monitor | 2,710 |
-| Printer / scanner | 2,632 | Tablet | 1,271 |
-| Smartphone | 1,154 | Desktop | 452 |
+| Laptop | 4,530 | Monitor | 2,710 |
+| Printer / scanner | 2,632 | Tablet | 1,370 |
+| Smartphone | 1,155 | Desktop | 452 |
 | Television | 180 | Router / network | 93 |
-| Smartwatch | 3 | Speaker | 2 |
-| Streaming device | 2 | Headphones | 1 |
-| Spatial computer | 1 |  |  |
+| Game console | 7 | Smartwatch | 3 |
+| Spatial computer | 3 | E-reader | 3 |
+| Speaker | 2 | Streaming device | 2 |
+| Headphones | 1 |  |  |
 
-Some categories have many regulatory records while others only have manufacturer-report examples. The UI exposes those coverage differences instead of filling the catalogue with invented models. Camera and game-console scenarios are supported by the model and Open Repair profiles, but no model-level source is bundled yet.
+Some categories have many regulatory records while others contain only reviewed manufacturer identities. Identity-only rows prove that a model exists but do not turn category assumptions into observations. Any other named gadget can still be assessed through the editable fallback flow.
 
 ### Provenance and entity resolution
 
@@ -87,24 +92,29 @@ France/iFixit├── sync + normalize + resolve ── official_gadgets.csv �
 Product PDFs ┤                  │                         │                │
 Open Repair ─┤                  ├─ repair_profiles.csv    │                ├─ FastAPI
 OWID/Ember ──┘                  └─ grid_intensity.csv     │                └─ Streamlit UI
-                                                        │
+Reviewed identities + aliases ──────────────────────────┘        │
+                                                                  ├─ exact/alias/fuzzy candidates
+Any unlisted device name ── category inference + confirmation ────┘  └─ explicit fallback scenario
+
                          balanced scenario generator ◄──┘
                                       │
                           global MLP (128 · 64 · 32)
                                       +
                      category residual MLPs (64 · 32)
                                       │
-                    72% ledger + 28% neural prediction
+              72–100% ledger + 0–28% neural prediction
                                       │
                 score · range · factors · explanation · PDF
 ```
 
 ### Scoring boundary
 
-The modeled impact burden blends:
+For a catalog-backed, supported category, the modeled impact burden blends:
 
 - **72% transparent ledger**: manufacturing/materials 35%, energy 22%, lifespan/repair 18%, circularity/e-waste 13%, battery 8%, transport 4%.
-- **28% neural prediction**: nonlinear estimate using category, embodied carbon, power, daily use, country grid intensity, lifespan, repairability, recyclability, recycled content, battery, weight and transport.
+- **Up to 28% neural prediction**: nonlinear estimate using category, embodied carbon, power, daily use, country grid intensity, lifespan, repairability, recyclability, recycled content, battery, weight and transport.
+
+For an identity-only or unlisted device in a recognised category the neural share is capped at **12%** and uncertainty is widened. A generic `Other` device uses the transparent ledger only. This applicability control prevents a verified name or name-only input from looking like an exact environmental measurement.
 
 The final eco score is `100 − impact burden`. Higher is greener. Manufacturer-reported lifecycle carbon is displayed when available; otherwise carbon is a scenario computed from manufacturing, electricity and transport assumptions.
 
@@ -195,7 +205,15 @@ Interactive docs are available at `http://localhost:8000/docs`.
 curl http://localhost:8000/health
 
 # Search primary gadget records
-curl "http://localhost:8000/v1/gadgets?q=ThinkPad&category=Laptop&limit=10"
+curl "http://localhost:8000/v1/gadgets?q=MacBook&limit=10"
+
+# Resolve a familiar name or receive an explicit fallback descriptor
+curl "http://localhost:8000/v1/resolve?q=Samsung%20Galaxy%20S25%2B"
+
+# Assess an unlisted/future name using inferred, editable category assumptions
+curl -X POST http://localhost:8000/v1/assess \
+  -H "Content-Type: application/json" \
+  -d '{"query":"iPhone 99 Future","grid_kg_co2_per_kwh":0.7054}'
 
 # Run a custom regional scenario
 curl -X POST http://localhost:8000/v1/assess \
@@ -211,6 +229,7 @@ Endpoints:
 - `GET /health`
 - `GET /v1/categories`
 - `GET /v1/gadgets`
+- `GET /v1/resolve`
 - `GET /v1/gadgets/{product_id}`
 - `POST /v1/assess`
 - `GET /v1/data-quality`
@@ -242,6 +261,7 @@ Restrict browser access to the API with `ALLOWED_ORIGINS`. No application secret
 app.py                              responsive Streamlit product UI
 api.py                              FastAPI search and assessment service
 data/official_gadgets.csv           provenance-rich normalized snapshot
+data/consumer_identities.csv        reviewed identity-only gaps and corrected variants
 data/catalog.db                     indexed SQLite/FTS5 catalogue
 data/grid_intensity.csv             latest country/region electricity profiles
 data/repair_profiles.csv            Open Repair brand/category aggregates
@@ -251,6 +271,7 @@ data/gadget_training_scenarios.csv  reproducible balanced model scenarios
 models/gadget_impact_pipeline.joblib global + category residual neural models
 models/metrics.json                 holdout calibration and drift baseline
 src/sync_official_data.py           source adapters, normalization and resolution
+src/device_search.py                global ranking, aliases, typo recovery and fallback inference
 src/train_model.py                  scenario generation, training and evaluation
 src/modeling.py                     serializable category-aware model wrapper
 src/utils.py                        ledger, confidence, ranges and recommendations
@@ -264,6 +285,8 @@ tests/                              lifecycle, data, model, API and PDF tests
 ## Limitations and responsible use
 
 - Public coverage is uneven. A category with one manufacturer report does not represent the whole market.
+- “Any device” means the app can build an explicit estimate for any name; it does not mean exact public measurements exist for every model ever sold.
+- Complete global phone identity requires licensed feeds such as the GSMA Device Database; vendor pages do not provide a legally reusable universal bulk API.
 - ENERGY STAR and EPREL records are certification/registry evidence, not full product LCAs.
 - Manufacturer footprints use configuration-specific boundaries and geography and may not be directly comparable.
 - Open Repair model identity was intentionally removed upstream because of quality concerns; this project only uses its brand/category aggregates.

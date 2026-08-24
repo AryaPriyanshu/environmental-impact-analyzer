@@ -42,6 +42,8 @@ ENERGY_STAR = {
     "t2v6-g4nf": ("ENERGY STAR Imaging Equipment V3.x", "Printer / scanner"),
     "n8cx-m62r": ("ENERGY STAR Large Network Equipment", "Router / network"),
 }
+ENERGY_STAR_UPC_DATASET = "8edu-y555"
+ENERGY_STAR_UPC_PAGE = "https://data.energystar.gov/d/8edu-y555"
 EPREL_ENDPOINT = "https://eprel.ec.europa.eu/api/products/smartphonestablets20231669"
 EPREL_PAGE = "https://eprel.ec.europa.eu/screen/product/smartphonestablets20231669"
 REPAIR_DATASET_API = "https://www.data.gouv.fr/api/1/datasets/fichiers-consolides-des-donnees-respectant-le-schema-indice-de-reparabilite/"
@@ -129,6 +131,9 @@ def _truth(value: Any) -> bool:
 
 def _canonical(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().casefold()
+    # Product punctuation can be semantic.  Preserve Plus variants during
+    # entity resolution so Galaxy S25 and Galaxy S25+ cannot be merged.
+    text = text.replace("+", " plus ")
     text = re.sub(r"\b(incorporated|corporation|company|limited|inc|corp|ltd|llc|gmbh|sa|sas|plc)\b", " ", text)
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
@@ -150,6 +155,32 @@ def _fetch_json(url: str, **kwargs: Any) -> Any:
         return response.json()
 
 
+def _fetch_socrata(dataset_id: str, *, select: str = "", where: str = "", order: str = "pd_id", page_size: int = 50000) -> list[dict]:
+    """Fetch a complete Socrata result set with bounded pagination."""
+    resource = f"https://data.energystar.gov/resource/{dataset_id}.json"
+    rows: list[dict] = []
+    offset = 0
+    with _session() as session:
+        while True:
+            params: dict[str, Any] = {"$limit": page_size, "$offset": offset}
+            if select:
+                params["$select"] = select
+            if where:
+                params["$where"] = where
+            if order:
+                params["$order"] = order
+            response = session.get(resource, params=params, timeout=TIMEOUT)
+            response.raise_for_status()
+            batch = response.json()
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+            if offset > 1_000_000:
+                raise RuntimeError(f"ENERGY STAR {dataset_id} pagination exceeded safety limit")
+    return rows
+
+
 def _source_record(name: str, url: str, records: int, license_name: str, resource: str = "") -> dict:
     return {
         "name": name,
@@ -164,7 +195,9 @@ def _source_record(name: str, url: str, records: int, license_name: str, resourc
 
 def _computer_category(product_type: str) -> str:
     value = str(product_type).casefold()
-    return "Laptop" if any(word in value for word in ("notebook", "tablet", "portable", "mobile workstation")) else "Desktop"
+    if "tablet" in value or "slate" in value:
+        return "Tablet"
+    return "Laptop" if any(word in value for word in ("notebook", "portable", "mobile workstation")) else "Desktop"
 
 
 def _estimated_fields(category: str) -> dict[str, Any]:
@@ -216,6 +249,10 @@ def _base_record(raw: dict, dataset_id: str, source_name: str, category: str) ->
             "annual_energy_kwh": None,
             "screen_size_inches": None,
             "raw_product_type": raw.get("type") or raw.get("display_type") or raw.get("product_type") or "",
+            "energy_star_product_id": str(raw.get("pd_id") or ""),
+            "energy_star_model_identifier": str(raw.get("energy_star_model_identifier") or ""),
+            "additional_model_information": str(raw.get("additional_model_information") or ""),
+            "upc_codes": "",
         }
     )
     return record
@@ -276,10 +313,35 @@ def normalize_energy_star(dataset_id: str, source_name: str, family: str, raw_ro
 def fetch_energy_star() -> tuple[list[dict], list[dict]]:
     records, sources = [], []
     for dataset_id, (name, family) in ENERGY_STAR.items():
-        resource = f"https://data.energystar.gov/resource/{dataset_id}.json?$limit=50000"
-        raw = _fetch_json(resource)
+        resource = f"https://data.energystar.gov/resource/{dataset_id}.json"
+        raw = _fetch_socrata(dataset_id)
         records.extend(normalize_energy_star(dataset_id, name, family, raw))
         sources.append(_source_record(name, f"https://data.energystar.gov/d/{dataset_id}", len(raw), "U.S. government public data", resource))
+
+    upc_rows = _fetch_socrata(
+        ENERGY_STAR_UPC_DATASET,
+        select="pd_id,upc",
+        where="product_program_category in('Computers','Displays','Televisions','Imaging Equipment','Large Network Equipment')",
+        order="pd_id,upc",
+    )
+    upcs_by_product: dict[str, set[str]] = {}
+    for row in upc_rows:
+        product_id = str(row.get("pd_id") or "").strip()
+        upc = str(row.get("upc") or "").strip()
+        if product_id and upc:
+            upcs_by_product.setdefault(product_id, set()).add(upc)
+    for record in records:
+        product_upcs = upcs_by_product.get(str(record.get("energy_star_product_id") or ""), set())
+        record["upc_codes"] = " | ".join(sorted(product_upcs))
+    sources.append(
+        _source_record(
+            "ENERGY STAR Certified Products UPC Codes",
+            ENERGY_STAR_UPC_PAGE,
+            len(upc_rows),
+            "U.S. government public data",
+            f"https://data.energystar.gov/resource/{ENERGY_STAR_UPC_DATASET}.json",
+        )
+    )
     return records, sources
 
 

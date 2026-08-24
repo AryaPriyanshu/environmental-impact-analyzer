@@ -26,6 +26,7 @@ CATEGORY_BASELINES = {
     "Router / network": {"manufacturing": 95, "power": 42, "life": 7.0, "weight": 2.4, "battery": 0},
     "Streaming device": {"manufacturing": 43, "power": 5, "life": 5.0, "weight": 0.25, "battery": 0},
     "Spatial computer": {"manufacturing": 335, "power": 18, "life": 4.0, "weight": 0.65, "battery": 36},
+    "E-reader": {"manufacturing": 45, "power": 1.5, "life": 5.0, "weight": 0.25, "battery": 7},
     "Other": {"manufacturing": 100, "power": 25, "life": 4.0, "weight": 1.0, "battery": 10},
 }
 
@@ -70,6 +71,46 @@ def feature_defaults(category: str) -> dict[str, float]:
         "weight_kg": base["weight"],
         "battery_wh": base["battery"],
     }
+
+
+OBSERVED_FLAGS = (
+    "observed_carbon",
+    "observed_energy",
+    "observed_repairability",
+    "observed_battery",
+    "observed_durability",
+    "observed_software_support",
+)
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or value != value:
+        return False
+    return str(value).strip().casefold() in {"true", "1", "yes", "y"}
+
+
+def observed_axis_count(values: dict) -> int:
+    """Count environmental axes still backed by source observations."""
+    return sum(_truthy(values.get(flag)) for flag in OBSERVED_FLAGS)
+
+
+def has_product_environmental_evidence(values: dict) -> bool:
+    """Return whether a verified identity also has product environmental data."""
+    return bool(values.get("catalog_product")) and observed_axis_count(values) > 0
+
+
+def model_blend_weight(values: dict) -> float:
+    """Limit neural influence when the product identity or category is weak.
+
+    The neural model is trained on physics-informed scenarios, so an unlisted
+    name must not receive the same apparent model authority as a catalog-backed
+    product.  Generic ``Other`` devices use the deterministic ledger only.
+    """
+    if values.get("category") == "Other":
+        return 0.0
+    return 0.28 if has_product_environmental_evidence(values) else 0.12
 
 
 def calculate_assessment(
@@ -130,32 +171,33 @@ def calculate_assessment(
         "Transport": 0.04,
     }
     ledger = sum(factors[key] * weights[key] for key in factors)
-    impact = ledger if ml_impact is None else 0.72 * ledger + 0.28 * _number(ml_impact, ledger)
+    ml_weight = model_blend_weight(values) if ml_impact is not None else 0.0
+    impact = (1 - ml_weight) * ledger + ml_weight * _number(ml_impact, ledger)
     impact = min(100.0, max(0.0, impact))
 
     modeled_lifecycle = manufacturing + use_carbon + transport
     reported_lifecycle = values.get("reported_lifecycle_kg")
     lifecycle = modeled_lifecycle if pd_is_missing(reported_lifecycle) else max(_number(reported_lifecycle), 0.0)
 
-    observed_axes = sum(
-        bool(values.get(flag))
-        for flag in (
-            "observed_carbon",
-            "observed_energy",
-            "observed_repairability",
-            "observed_battery",
-            "observed_durability",
-            "observed_software_support",
-        )
-    )
-    observed_count = int(_number(values.get("observed_field_count"), 0))
-    confidence = min(94, 32 + observed_axes * 8 + min(observed_count, 5) * 4)
-    if values.get("source_type") in {"manufacturer_report", "regulatory_registry"}:
+    observed_axes = observed_axis_count(values)
+    invalidated_axes = {str(axis) for axis in values.get("invalidated_observed_axes", [])}
+    observed_count = max(0, int(_number(values.get("observed_field_count"), 0)) - len(invalidated_axes))
+    catalog_product = bool(values.get("catalog_product"))
+    product_evidence = catalog_product and observed_axes > 0
+    confidence_floor = 32 if product_evidence else 22 if catalog_product and values.get("category") != "Other" else 18 if values.get("category") != "Other" else 10
+    confidence = min(94, confidence_floor + observed_axes * 8 + min(observed_count, 5) * 4)
+    if product_evidence and values.get("source_type") in {"manufacturer_report", "regulatory_registry"}:
         confidence = min(96, confidence + 5)
 
-    lifecycle_fraction = 0.13 if confidence >= 80 else 0.21 if confidence >= 60 else 0.32
+    if not product_evidence:
+        lifecycle_fraction = 0.55 if values.get("category") == "Other" else 0.42
+    else:
+        lifecycle_fraction = 0.13 if confidence >= 80 else 0.21 if confidence >= 60 else 0.32
     uncertainty = max(1.0, lifecycle * lifecycle_fraction)
-    base_score_error = 4.0 if confidence >= 80 else 7.0 if confidence >= 60 else 11.0
+    if not product_evidence:
+        base_score_error = 22.0 if values.get("category") == "Other" else 16.0
+    else:
+        base_score_error = 4.0 if confidence >= 80 else 7.0 if confidence >= 60 else 11.0
     model_score_error = max(0.0, _number(ml_error, 0.0))
     score_uncertainty = min(25.0, (base_score_error**2 + model_score_error**2) ** 0.5)
     eco_score = 100 - impact

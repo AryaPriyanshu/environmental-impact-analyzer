@@ -17,8 +17,9 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from src.database import CatalogRepository
+from src.device_search import infer_device_identity, normalize_search_text
 from src.train_model import FEATURES
-from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, recommendations
+from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, model_blend_weight, recommendations
 
 
 ROOT = Path(__file__).parent
@@ -30,8 +31,8 @@ STARTED_AT = time.time()
 
 app = FastAPI(
     title="Luma Gadget Impact API",
-    version="3.0.0",
-    description="Evidence-first gadget search and uncertainty-aware lifecycle scenarios.",
+    version="4.0.0",
+    description="Global gadget discovery and evidence-first, uncertainty-aware lifecycle scenarios.",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -50,36 +51,112 @@ async def request_metrics(request: Request, call_next):
 
 class AssessmentInput(BaseModel):
     product_id: Optional[str] = None
+    query: Optional[str] = Field(None, max_length=120)
     name: str = "Custom gadget"
     manufacturer: str = "Unknown"
     category: str = "Other"
     manufacturing_kg: Optional[float] = Field(None, ge=0, le=5000)
     active_power_w: Optional[float] = Field(None, ge=0, le=5000)
-    daily_hours: float = Field(5.0, ge=0, le=24)
+    daily_hours: Optional[float] = Field(None, ge=0, le=24)
     grid_kg_co2_per_kwh: float = Field(0.42, ge=0, le=2)
     lifespan_years: Optional[float] = Field(None, ge=0.5, le=30)
-    repairability: float = Field(5.0, ge=0, le=10)
-    recyclability_pct: float = Field(65.0, ge=0, le=100)
-    recycled_content_pct: float = Field(20.0, ge=0, le=100)
+    repairability: Optional[float] = Field(None, ge=0, le=10)
+    recyclability_pct: Optional[float] = Field(None, ge=0, le=100)
+    recycled_content_pct: Optional[float] = Field(None, ge=0, le=100)
     battery_wh: Optional[float] = Field(None, ge=0, le=2000)
-    replaceable_battery: bool = False
+    replaceable_battery: Optional[bool] = None
     weight_kg: Optional[float] = Field(None, ge=0, le=500)
-    transport_km: float = Field(7000.0, ge=0, le=50000)
+    transport_km: Optional[float] = Field(None, ge=0, le=50000)
+
+
+def _explicit_fields(payload: AssessmentInput) -> set[str]:
+    return set(payload.model_fields_set if hasattr(payload, "model_fields_set") else payload.__fields_set__)
+
+
+def _apply_product_overrides(product: dict, supplied: dict, explicit_fields: set[str]) -> dict:
+    allowed = explicit_fields.difference({"product_id", "query", "name", "manufacturer", "category"})
+    product.update({key: supplied[key] for key in allowed if supplied.get(key) is not None})
+    override_axes: set[str] = set()
+    invalidated_axes: set[str] = set()
+    if allowed.intersection({"active_power_w", "daily_hours"}):
+        if product.get("observed_energy"):
+            invalidated_axes.add("energy")
+        product["annual_energy_kwh"] = None
+        product["observed_energy"] = False
+        override_axes.add("energy")
+    if "repairability" in allowed:
+        if product.get("observed_repairability"):
+            invalidated_axes.add("repairability")
+        product["observed_repairability"] = False
+        override_axes.add("repairability")
+    if allowed.intersection({"battery_wh", "replaceable_battery"}):
+        if product.get("observed_battery"):
+            invalidated_axes.add("battery")
+        product["observed_battery"] = False
+        override_axes.add("battery")
+    product["override_axes"] = sorted(override_axes)
+    product["invalidated_observed_axes"] = sorted(invalidated_axes)
+    product["catalog_product"] = True
+    product["resolution_status"] = "catalog_match" if has_product_environmental_evidence(product) else "verified_identity_estimate"
+    return product
 
 
 def _values(payload: AssessmentInput) -> dict:
     values = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    explicit_fields = _explicit_fields(payload)
+    product = None
     if payload.product_id:
         product = repository.get(payload.product_id)
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
-        product.update({key: value for key, value in values.items() if value is not None and key not in {"product_id", "name", "manufacturer", "category"}})
-        values = product
+    elif payload.query:
+        resolution = repository.resolve(payload.query, limit=12)
+        normalized = normalize_search_text(payload.query)
+        exact = [
+            item
+            for item in resolution["items"]
+            if normalized
+            in {
+                normalize_search_text(item.get("name")),
+                normalize_search_text(item.get("model_number")),
+                normalize_search_text(f"{item.get('manufacturer', '')} {item.get('name', '')}"),
+            }
+        ]
+        if len(exact) == 1:
+            product = exact[0]
+
+    if product is not None:
+        values = _apply_product_overrides(product, values, explicit_fields)
+    else:
+        if payload.query:
+            inferred = infer_device_identity(payload.query)
+            values["name"] = payload.query
+            if payload.manufacturer == "Unknown":
+                values["manufacturer"] = inferred["manufacturer"]
+            if payload.category == "Other":
+                values["category"] = inferred["category"]
+            values["identity_confidence"] = inferred["identity_confidence"]
+        values["catalog_product"] = False
+        values["resolution_status"] = "category_estimate" if values.get("category") in CATEGORY_BASELINES and values.get("category") != "Other" else "generic_estimate"
     if values.get("category") not in CATEGORY_BASELINES:
-        raise HTTPException(status_code=422, detail=f"Unknown category. Use one of: {', '.join(CATEGORY_BASELINES)}")
+        values["requested_category"] = values.get("category")
+        inferred_category = infer_device_identity(f"{values.get('name', '')} {values.get('category', '')}")["category"]
+        values["category"] = inferred_category if inferred_category in CATEGORY_BASELINES else "Other"
+        values["resolution_status"] = "category_estimate" if values["category"] != "Other" else "generic_estimate"
     defaults = feature_defaults(values["category"])
     for key, default in defaults.items():
-        if values.get(key) is None:
+        if values.get(key) is None or (isinstance(values.get(key), float) and pd.isna(values.get(key))):
+            values[key] = default
+    scenario_defaults = {
+        "daily_hours": 24.0 if values["category"] == "Router / network" else 6.0 if values["category"] in {"Laptop", "Desktop", "Monitor"} else 5.0,
+        "repairability": 5.0,
+        "recyclability_pct": 65.0,
+        "recycled_content_pct": 20.0,
+        "replaceable_battery": False,
+        "transport_km": 7000.0,
+    }
+    for key, default in scenario_defaults.items():
+        if values.get(key) is None or (isinstance(values.get(key), float) and pd.isna(values.get(key))):
             values[key] = default
     values.setdefault("grid_profile", "Average")
     values.setdefault("observed_field_count", 0)
@@ -88,6 +165,9 @@ def _values(payload: AssessmentInput) -> dict:
     values.setdefault("observed_energy", False)
     values.setdefault("observed_repairability", False)
     values.setdefault("observed_carbon", False)
+    values.setdefault("observed_battery", False)
+    values.setdefault("observed_durability", False)
+    values.setdefault("observed_software_support", False)
     return values
 
 
@@ -98,7 +178,9 @@ def health():
         "status": "ok",
         "version": app.version,
         "snapshot_id": metadata.get("snapshot_id"),
-        "records": metadata.get("record_count"),
+        "records": metadata.get("catalog_record_count", metadata.get("record_count")),
+        "source_records": metadata.get("record_count"),
+        "identity_supplements": metadata.get("identity_supplement_count", 0),
         "model_loaded": model is not None,
         "uptime_seconds": round(time.time() - STARTED_AT, 1),
     }
@@ -122,6 +204,44 @@ def gadgets(
     return {"items": items, "limit": limit, "offset": offset, "count": len(items)}
 
 
+@app.get("/v1/resolve", tags=["Catalogue"])
+def resolve_device(q: str = Query(..., min_length=1, max_length=120), limit: int = Query(12, ge=1, le=50)):
+    """Resolve a familiar product name or return a transparent fallback."""
+    resolution = repository.resolve(q, limit=limit)
+    items = resolution["items"]
+    normalized = normalize_search_text(q)
+    exact = [
+        item
+        for item in items
+        if normalized
+        in {
+            normalize_search_text(item.get("name")),
+            normalize_search_text(item.get("model_number")),
+            normalize_search_text(f"{item.get('manufacturer', '')} {item.get('name', '')}"),
+        }
+    ]
+    inferred = infer_device_identity(q)
+    if len(exact) == 1:
+        status = "exact_product"
+    elif items:
+        status = "candidate_list"
+    else:
+        status = "category_estimate_available" if inferred["category"] != "Other" else "generic_estimate_available"
+    return {
+        "query": q,
+        "status": status,
+        "candidates": items,
+        "total_matches": resolution["total"],
+        "facets": resolution["facets"],
+        "fallback": {
+            "available": True,
+            **inferred,
+            "evidence_tier": "Category estimate" if inferred["category"] != "Other" else "Generic estimate",
+            "message": "No model-specific lifecycle facts will be assumed; category defaults and user inputs remain explicit.",
+        },
+    }
+
+
 @app.get("/v1/gadgets/{product_id}", tags=["Catalogue"])
 def gadget(product_id: str):
     item = repository.get(product_id)
@@ -142,12 +262,21 @@ def assess(payload: AssessmentInput):
         else:
             prediction = float(model.predict(input_frame)[0])
     result = calculate_assessment(values, prediction, model_error)
+    model_share = model_blend_weight(values) if prediction is not None else 0.0
+    product_evidence = has_product_environmental_evidence(values)
     return {
         "product": {key: values.get(key) for key in ("product_id", "name", "manufacturer", "category", "source_name", "source_url")},
         "assessment": asdict(result),
         "explanation": explanation(values, result),
         "recommendations": recommendations(values, result),
-        "method": {"ledger_share": 0.72, "model_share": 0.28, "model_prediction": prediction, "model_p90_error": model_error},
+        "resolution": {
+            "status": values.get("resolution_status", "catalog_match" if values.get("catalog_product") else "generic_estimate"),
+            "catalog_product": bool(values.get("catalog_product")),
+            "identity_confidence": values.get("identity_confidence", "Verified source" if values.get("catalog_product") else "Low"),
+            "evidence_tier": "Product evidence" if product_evidence else "Verified identity + category estimate" if values.get("catalog_product") else "Category estimate" if values.get("category") != "Other" else "Generic estimate",
+            "scenario_overrides": values.get("override_axes", []),
+        },
+        "method": {"ledger_share": round(1 - model_share, 2), "model_share": model_share, "model_prediction": prediction, "model_p90_error": model_error},
     }
 
 
