@@ -1,6 +1,6 @@
 {
   "status": "healthy",
-  "checked_at": "2026-08-23T15:17:21.763851+00:00",
+  "checked_at": "2026-08-24T10:54:46.868150+00:00",
   "snapshot_id": "511869fd34bfc302",
   "checks": {
     "catalog_minimum": {
@@ -10,7 +10,7 @@
     },
     "snapshot_freshness": {
       "ok": true,
-      "value": 0,
+      "value": 1,
       "expected": "<= 45 days"
     },
     "model_snapshot": {
