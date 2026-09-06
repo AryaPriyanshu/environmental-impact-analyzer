@@ -59,6 +59,10 @@ def test_identity_inference_covers_major_device_families_and_unknowns():
     assert infer_device_identity("Samsung Galaxy S25+")["category"] == "Smartphone"
     assert infer_device_identity("Samsung Galaxy Note 20")["category"] == "Smartphone"
     assert infer_device_identity("Google Pixel Fold")["category"] == "Smartphone"
+    sony_headphones = infer_device_identity("Sony WH-1000XM5")
+    assert sony_headphones["manufacturer"] == "Sony"
+    assert sony_headphones["category"] == "Headphones"
+    assert sony_headphones["identity_confidence"] == "High"
     assert infer_device_identity("Nintendo Switch 2")["category"] == "Game console"
     assert infer_device_identity("Kindle Paperwhite")["category"] == "E-reader"
     unknown = infer_device_identity("Acme Solar Widget")
@@ -129,7 +133,10 @@ def test_query_only_api_assessment_is_transparently_inferred():
     assert body["product"]["category"] == "Smartphone"
     assert body["resolution"]["status"] == "category_estimate"
     assert not body["resolution"]["catalog_product"]
-    assert body["method"]["model_share"] == 0.12
+    assert body["method"]["model_share"] == 0.0
+    assert body["method"]["model_role"] == "experimental_shadow"
+    assert body["method"]["model_prediction"] is not None
+    assert body["method"]["applicability"]["status"] in {"inside", "edge", "outside"}
     assert body["assessment"]["score_uncertainty"] >= 16
 
 
@@ -137,12 +144,14 @@ def test_exact_query_assessment_uses_catalog_evidence_but_identity_only_stays_we
     iphone = client.post("/v1/assess", json={"query": "iPhone 16"}).json()
     assert iphone["resolution"]["status"] == "catalog_match"
     assert iphone["product"]["source_name"] == "Apple Product Environmental Report"
-    assert iphone["method"]["model_share"] == 0.28
+    assert iphone["method"]["model_share"] == 0.0
+    assert iphone["method"]["model_role"] == "experimental_shadow"
 
     playstation = client.post("/v1/assess", json={"query": "PlayStation 5"}).json()
     assert playstation["resolution"]["status"] == "verified_identity_estimate"
     assert playstation["resolution"]["evidence_tier"] == "Verified identity + category estimate"
-    assert playstation["method"]["model_share"] == 0.12
+    assert playstation["method"]["model_share"] == 0.0
+    assert playstation["method"]["model_role"] == "experimental_shadow"
     assert playstation["assessment"]["score_uncertainty"] >= 16
 
 
@@ -157,6 +166,44 @@ def test_api_category_defaults_and_scenario_overrides_change_evidence_basis():
     assert overridden["resolution"]["scenario_overrides"] == ["repairability"]
     assert overridden["resolution"]["evidence_tier"] == "Verified identity + category estimate"
     assert overridden["assessment"]["confidence"] < baseline["assessment"]["confidence"]
+
+
+def test_api_lifecycle_driver_overrides_invalidate_reported_total_and_expose_axes():
+    baseline = client.post("/v1/assess", json={"product_id": "report-9f4b4675623addd7"}).json()
+    overridden = client.post(
+        "/v1/assess",
+        json={
+            "product_id": "report-9f4b4675623addd7",
+            "lifespan_years": 8,
+            "grid_kg_co2_per_kwh": 0.08,
+            "recycled_content_pct": 45,
+        },
+    ).json()
+
+    assert baseline["assessment"]["lifecycle_carbon"] == repository.get("report-9f4b4675623addd7")["reported_lifecycle_kg"]
+    assert overridden["assessment"]["lifecycle_carbon"] != baseline["assessment"]["lifecycle_carbon"]
+    assert overridden["resolution"]["scenario_overrides"] == ["carbon", "circularity", "durability", "grid"]
+    assert overridden["method"]["scoring_version"] == "4.1"
+    assert overridden["method"]["source_snapshot"] == repository.metadata()["snapshot_id"]
+    evidence = {entry["factor"]: entry for entry in overridden["evidence"]}
+    assert evidence["Expected ownership"]["status"] == "Scenario override"
+    assert evidence["Recycled content"]["status"] == "Scenario override"
+
+
+def test_grid_context_does_not_relabel_a_manufacturer_report_as_user_carbon():
+    product_id = "report-9f4b4675623addd7"
+    product = repository.get(product_id)
+    response = client.post(
+        "/v1/assess",
+        json={"product_id": product_id, "grid_kg_co2_per_kwh": 0.08},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assessment"]["lifecycle_carbon"] == product["reported_lifecycle_kg"]
+    assert body["resolution"]["scenario_overrides"] == ["grid"]
+    evidence = {entry["factor"]: entry for entry in body["evidence"]}
+    assert evidence["Reported lifecycle carbon"]["status"] == "Observed"
+    assert evidence["Electricity intensity"]["status"] == "Scenario override"
 
 
 def test_product_api_keeps_observed_fields_when_no_override_is_supplied():

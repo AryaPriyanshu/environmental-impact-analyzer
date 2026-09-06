@@ -1,6 +1,7 @@
-from src.utils import calculate_assessment, feature_defaults, impact_category
+from src.utils import calculate_assessment, explanation, feature_defaults, impact_category, recommendations
 from pathlib import Path
 import json
+import math
 import pandas as pd
 
 
@@ -25,6 +26,42 @@ def test_longer_life_improves_score():
 def test_category_defaults_and_labels():
     assert feature_defaults("Smartphone")["weight_kg"] < feature_defaults("Television")["weight_kg"]
     assert impact_category(80) == "Leading"
+
+
+def test_explanations_use_natural_category_nouns():
+    values = sample()
+    values["category"] = "Headphones"
+    result = calculate_assessment(values)
+    assert explanation(values, result).startswith("This headphone device earns")
+    values["category"] = "Other"
+    assert explanation(values, result).startswith("This gadget earns")
+
+
+def test_nonfinite_loose_inputs_fail_closed_and_string_booleans_stay_false():
+    values = sample()
+    values.update(
+        {
+            "manufacturing_kg": float("inf"),
+            "active_power_w": 10**10_000,
+            "weight_kg": float("nan"),
+            "reported_lifecycle_kg": float("inf"),
+            "replaceable_battery": "False",
+            "catalog_product": "False",
+            "observed_energy": True,
+        }
+    )
+    result = calculate_assessment(values)
+    assert all(
+        math.isfinite(value)
+        for value in (
+            result.eco_score,
+            result.lifecycle_carbon,
+            result.annual_energy,
+            result.uncertainty,
+        )
+    )
+    assert result.confidence < 32
+    assert any("replaceable-battery" in tip for tip in recommendations(values, result))
 
 
 def test_official_snapshot_is_large_and_traceable():

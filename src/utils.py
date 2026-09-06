@@ -7,7 +7,11 @@ uncertainty visible throughout the UI and API.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Optional
+
+
+SCORING_VERSION = "4.1"
 
 
 CATEGORY_BASELINES = {
@@ -52,14 +56,25 @@ def _number(value, fallback: float = 0.0) -> float:
     """Return a finite float for loosely typed CSV/API values."""
     try:
         number = float(value)
-        return fallback if number != number else number
-    except (TypeError, ValueError):
+        return number if isfinite(number) else fallback
+    except (TypeError, ValueError, OverflowError):
         return fallback
 
 
 def pd_is_missing(value) -> bool:
     """Small dependency-free NaN/None check for values loaded from pandas."""
-    return value is None or value != value
+    if value is None:
+        return True
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        numeric = None
+    if numeric is not None and not isfinite(numeric):
+        return True
+    try:
+        return bool(value != value)
+    except (TypeError, ValueError):
+        return False
 
 
 def feature_defaults(category: str) -> dict[str, float]:
@@ -98,7 +113,7 @@ def observed_axis_count(values: dict) -> int:
 
 def has_product_environmental_evidence(values: dict) -> bool:
     """Return whether a verified identity also has product environmental data."""
-    return bool(values.get("catalog_product")) and observed_axis_count(values) > 0
+    return _truthy(values.get("catalog_product")) and observed_axis_count(values) > 0
 
 
 def model_blend_weight(values: dict) -> float:
@@ -108,7 +123,8 @@ def model_blend_weight(values: dict) -> float:
     name must not receive the same apparent model authority as a catalog-backed
     product.  Generic ``Other`` devices use the deterministic ledger only.
     """
-    if values.get("category") == "Other":
+    model_enabled = values.get("model_point_estimate_enabled")
+    if (model_enabled is not None and not _truthy(model_enabled)) or values.get("category") == "Other":
         return 0.0
     return 0.28 if has_product_environmental_evidence(values) else 0.12
 
@@ -138,7 +154,7 @@ def calculate_assessment(
     transport = weight * transport_km * 0.00012
 
     battery_wh = max(_number(values.get("battery_wh"), 0.0), 0.0)
-    replaceable_battery = bool(values.get("replaceable_battery", False))
+    replaceable_battery = _truthy(values.get("replaceable_battery", False))
     battery_penalty = battery_wh / 100 * (0.65 if replaceable_battery else 1.15)
     repairability = min(10.0, max(0.0, _number(values.get("repairability"), 5.0)))
     repair_penalty = (10 - repairability) * 2.6
@@ -182,7 +198,7 @@ def calculate_assessment(
     observed_axes = observed_axis_count(values)
     invalidated_axes = {str(axis) for axis in values.get("invalidated_observed_axes", [])}
     observed_count = max(0, int(_number(values.get("observed_field_count"), 0)) - len(invalidated_axes))
-    catalog_product = bool(values.get("catalog_product"))
+    catalog_product = _truthy(values.get("catalog_product"))
     product_evidence = catalog_product and observed_axes > 0
     confidence_floor = 32 if product_evidence else 22 if catalog_product and values.get("category") != "Other" else 18 if values.get("category") != "Other" else 10
     confidence = min(94, confidence_floor + observed_axes * 8 + min(observed_count, 5) * 4)
@@ -231,7 +247,7 @@ def recommendations(values: dict, assessment: Assessment) -> list[str]:
         tips.append("Prefer accessible parts, published repair information and longer software support.")
     if _number(values.get("recycled_content_pct"), 15) < 30:
         tips.append("Look for verified recycled materials or a certified refurbished alternative.")
-    if not values.get("replaceable_battery") and _number(values.get("battery_wh"), 0) > 20:
+    if not _truthy(values.get("replaceable_battery")) and _number(values.get("battery_wh"), 0) > 20:
         tips.append("Choose a replaceable-battery model or confirm an affordable battery service.")
     if assessment.annual_energy > 100:
         tips.append("Enable energy-saving mode and reduce standby time.")
@@ -244,8 +260,15 @@ def explanation(values: dict, assessment: Assessment) -> str:
     ranked = sorted(assessment.factors.items(), key=lambda item: item[1], reverse=True)
     footprint = "manufacturer-reported product footprint" if values.get("observed_carbon") else "estimated lifecycle footprint"
     caveat = "The report configuration and geography still matter" if values.get("observed_carbon") else "This is a scenario estimate—not a product EPD"
+    category = str(values.get("category", "Other") or "Other").strip()
+    device_noun = {
+        "Headphones": "headphone device",
+        "Printer / scanner": "printer or scanner",
+        "Router / network": "network device",
+        "Other": "gadget",
+    }.get(category, category.lower())
     return (
-        f"This {str(values.get('category', 'gadget')).lower()} earns an eco score of "
+        f"This {device_noun} earns an eco score of "
         f"{assessment.eco_score:.0f}/100, with a plausible range of {assessment.score_low:.0f}–"
         f"{assessment.score_high:.0f}. The largest modeled pressures are {ranked[0][0].lower()} "
         f"and {ranked[1][0].lower()}. Its {footprint} is {assessment.lifecycle_carbon:.0f} kg CO₂e. "

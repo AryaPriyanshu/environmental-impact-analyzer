@@ -9,29 +9,35 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Path as PathParameter, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.database import CatalogRepository
 from src.device_search import infer_device_identity, normalize_search_text
+from src.evidence import evidence_ledger
+from src.modeling import load_model_artifact, predict_model_diagnostics
 from src.train_model import FEATURES
-from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, model_blend_weight, recommendations
+from src.utils import CATEGORY_BASELINES, SCORING_VERSION, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, model_blend_weight, recommendations
 
 
 ROOT = Path(__file__).parent
 MODEL_PATH = ROOT / "models" / "gadget_impact_pipeline.joblib"
 repository = CatalogRepository(ROOT / "data" / "catalog.db")
-model = joblib.load(MODEL_PATH) if MODEL_PATH.exists() else None
+model, MODEL_ARTIFACT_STATUS = load_model_artifact(MODEL_PATH)
+try:
+    MODEL_METRICS = json.loads((ROOT / "models" / "metrics.json").read_text())
+except (OSError, ValueError):
+    MODEL_METRICS = {}
+MODEL_POINT_ESTIMATE_ENABLED = bool(MODEL_METRICS.get("validation", {}).get("validated_for_real_lca", False))
 REQUESTS = Counter()
-STARTED_AT = time.time()
+STARTED_MONOTONIC = time.monotonic()
 
 app = FastAPI(
     title="Luma Gadget Impact API",
-    version="4.0.0",
+    version="4.1.0",
     description="Global gadget discovery and evidence-first, uncertainty-aware lifecycle scenarios.",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -43,27 +49,37 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=Fals
 @app.middleware("http")
 async def request_metrics(request: Request, call_next):
     started = time.perf_counter()
-    response = await call_next(request)
-    REQUESTS[(request.url.path, response.status_code)] += 1
+    try:
+        response = await call_next(request)
+    except Exception:
+        route = request.scope.get("route")
+        route_label = getattr(route, "path_format", None) or getattr(route, "path", None) or "__unmatched__"
+        REQUESTS[(route_label, 500)] += 1
+        raise
+    route = request.scope.get("route")
+    route_label = getattr(route, "path_format", None) or getattr(route, "path", None) or "__unmatched__"
+    REQUESTS[(route_label, response.status_code)] += 1
     response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - started) * 1000:.2f}"
     return response
 
 
 class AssessmentInput(BaseModel):
-    product_id: Optional[str] = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    product_id: Optional[str] = Field(None, min_length=1, max_length=200)
     query: Optional[str] = Field(None, max_length=120)
-    name: str = "Custom gadget"
-    manufacturer: str = "Unknown"
-    category: str = "Other"
+    name: str = Field("Custom gadget", min_length=1, max_length=320)
+    manufacturer: str = Field("Unknown", min_length=1, max_length=160)
+    category: str = Field("Other", min_length=1, max_length=80)
     manufacturing_kg: Optional[float] = Field(None, ge=0, le=5000)
-    active_power_w: Optional[float] = Field(None, ge=0, le=5000)
+    active_power_w: Optional[float] = Field(None, ge=0, le=10_000)
     daily_hours: Optional[float] = Field(None, ge=0, le=24)
     grid_kg_co2_per_kwh: float = Field(0.42, ge=0, le=2)
     lifespan_years: Optional[float] = Field(None, ge=0.5, le=30)
     repairability: Optional[float] = Field(None, ge=0, le=10)
     recyclability_pct: Optional[float] = Field(None, ge=0, le=100)
     recycled_content_pct: Optional[float] = Field(None, ge=0, le=100)
-    battery_wh: Optional[float] = Field(None, ge=0, le=2000)
+    battery_wh: Optional[float] = Field(None, ge=0, le=10_000)
     replaceable_battery: Optional[bool] = None
     weight_kg: Optional[float] = Field(None, ge=0, le=500)
     transport_km: Optional[float] = Field(None, ge=0, le=50000)
@@ -94,6 +110,40 @@ def _apply_product_overrides(product: dict, supplied: dict, explicit_fields: set
             invalidated_axes.add("battery")
         product["observed_battery"] = False
         override_axes.add("battery")
+    if allowed.intersection({"lifespan_years", "software_support_years", "brand_repair_success_rate"}):
+        if product.get("observed_durability") or product.get("observed_software_support"):
+            invalidated_axes.add("durability")
+        product["observed_durability"] = False
+        product["observed_software_support"] = False
+        override_axes.add("durability")
+    if allowed.intersection({"manufacturing_kg", "weight_kg"}):
+        override_axes.add("materials")
+    if allowed.intersection({"recyclability_pct", "recycled_content_pct"}):
+        override_axes.add("circularity")
+    if "transport_km" in allowed:
+        override_axes.add("transport")
+    if "grid_kg_co2_per_kwh" in allowed:
+        override_axes.add("grid")
+    if "reported_lifecycle_kg" in allowed:
+        if product.get("observed_carbon"):
+            invalidated_axes.add("carbon")
+        product["observed_carbon"] = False
+        override_axes.add("carbon")
+
+    lifecycle_drivers = {
+        "manufacturing_kg",
+        "active_power_w",
+        "daily_hours",
+        "lifespan_years",
+        "weight_kg",
+        "transport_km",
+    }
+    if allowed.intersection(lifecycle_drivers) and "reported_lifecycle_kg" not in allowed:
+        if product.get("observed_carbon"):
+            invalidated_axes.add("carbon")
+        product["reported_lifecycle_kg"] = None
+        product["observed_carbon"] = False
+        override_axes.add("carbon")
     product["override_axes"] = sorted(override_axes)
     product["invalidated_observed_axes"] = sorted(invalidated_axes)
     product["catalog_product"] = True
@@ -171,19 +221,52 @@ def _values(payload: AssessmentInput) -> dict:
     return values
 
 
-@app.get("/health", tags=["Operations"])
-def health():
-    metadata = repository.metadata()
+def _readiness_payload() -> tuple[dict, int]:
+    database_ready, metadata = repository.readiness()
+    model_artifact_loaded = model is not None
+    model_snapshot_matches = bool(
+        model_artifact_loaded
+        and getattr(model, "snapshot_id", None) == metadata.get("snapshot_id")
+        and MODEL_METRICS.get("snapshot_id") == metadata.get("snapshot_id")
+    )
+    model_ready = model_artifact_loaded and model_snapshot_matches
+    ready = database_ready and model_ready
     return {
-        "status": "ok",
+        "status": "ok" if ready else "not_ready",
         "version": app.version,
         "snapshot_id": metadata.get("snapshot_id"),
         "records": metadata.get("catalog_record_count", metadata.get("record_count")),
         "source_records": metadata.get("record_count"),
         "identity_supplements": metadata.get("identity_supplement_count", 0),
-        "model_loaded": model is not None,
-        "uptime_seconds": round(time.time() - STARTED_AT, 1),
+        "database_ready": database_ready,
+        "model_ready": model_ready,
+        "model_loaded": model_artifact_loaded,
+        "model_artifact_status": MODEL_ARTIFACT_STATUS,
+        "model_snapshot_matches": model_snapshot_matches,
+        "uptime_seconds": round(time.monotonic() - STARTED_MONOTONIC, 1),
+    }, 200 if ready else 503
+
+
+@app.get("/health/live", tags=["Operations"])
+def liveness():
+    return {
+        "status": "ok",
+        "version": app.version,
+        "uptime_seconds": round(time.monotonic() - STARTED_MONOTONIC, 1),
     }
+
+
+@app.get("/health/ready", tags=["Operations"])
+def readiness():
+    payload, status_code = _readiness_payload()
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/health", tags=["Operations"])
+def health():
+    """Compatibility endpoint with readiness-aware status reporting."""
+    payload, status_code = _readiness_payload()
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/v1/categories", tags=["Catalogue"])
@@ -194,10 +277,10 @@ def categories():
 @app.get("/v1/gadgets", tags=["Catalogue"])
 def gadgets(
     q: str = Query("", max_length=120),
-    category: Optional[str] = None,
-    manufacturer: Optional[str] = None,
+    category: Optional[str] = Query(None, max_length=80),
+    manufacturer: Optional[str] = Query(None, max_length=160),
     limit: int = Query(50, ge=1, le=250),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=1_000_000),
     primary_only: bool = True,
 ):
     items = repository.search(q, category, manufacturer, limit, offset, primary_only)
@@ -243,7 +326,7 @@ def resolve_device(q: str = Query(..., min_length=1, max_length=120), limit: int
 
 
 @app.get("/v1/gadgets/{product_id}", tags=["Catalogue"])
-def gadget(product_id: str):
+def gadget(product_id: str = PathParameter(..., min_length=1, max_length=200)):
     item = repository.get(product_id)
     if not item:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -253,14 +336,10 @@ def gadget(product_id: str):
 @app.post("/v1/assess", tags=["Assessment"])
 def assess(payload: AssessmentInput):
     values = _values(payload)
-    prediction, model_error = None, None
-    if model is not None:
-        input_frame = pd.DataFrame([{feature: values.get(feature) for feature in FEATURES}])
-        if hasattr(model, "predict_with_uncertainty"):
-            predictions, errors = model.predict_with_uncertainty(input_frame)
-            prediction, model_error = float(predictions[0]), float(errors[0])
-        else:
-            prediction = float(model.predict(input_frame)[0])
+    values["model_point_estimate_enabled"] = MODEL_POINT_ESTIMATE_ENABLED
+    model_features = getattr(model, "features", FEATURES) if model is not None else FEATURES
+    input_frame = pd.DataFrame([{feature: values.get(feature) for feature in model_features}])
+    prediction, model_error, applicability, diagnostic_status = predict_model_diagnostics(model, input_frame)
     result = calculate_assessment(values, prediction, model_error)
     model_share = model_blend_weight(values) if prediction is not None else 0.0
     product_evidence = has_product_environmental_evidence(values)
@@ -269,6 +348,7 @@ def assess(payload: AssessmentInput):
         "assessment": asdict(result),
         "explanation": explanation(values, result),
         "recommendations": recommendations(values, result),
+        "evidence": [entry.to_dict() for entry in evidence_ledger(values, result.annual_energy)],
         "resolution": {
             "status": values.get("resolution_status", "catalog_match" if values.get("catalog_product") else "generic_estimate"),
             "catalog_product": bool(values.get("catalog_product")),
@@ -276,17 +356,28 @@ def assess(payload: AssessmentInput):
             "evidence_tier": "Product evidence" if product_evidence else "Verified identity + category estimate" if values.get("catalog_product") else "Category estimate" if values.get("category") != "Other" else "Generic estimate",
             "scenario_overrides": values.get("override_axes", []),
         },
-        "method": {"ledger_share": round(1 - model_share, 2), "model_share": model_share, "model_prediction": prediction, "model_p90_error": model_error},
+        "method": {
+            "scoring_version": SCORING_VERSION,
+            "source_snapshot": repository.metadata().get("snapshot_id"),
+            "model_version": MODEL_METRICS.get("model_version"),
+            "ledger_share": round(1 - model_share, 2),
+            "model_share": model_share,
+            "model_prediction": prediction,
+            "model_p90_error": model_error,
+            "model_role": "ledger_only" if diagnostic_status != "ready" else "validated_blend" if MODEL_POINT_ESTIMATE_ENABLED else "experimental_shadow",
+            "model_status": diagnostic_status,
+            "applicability": applicability,
+        },
     }
 
 
 @app.get("/v1/data-quality", tags=["Operations"])
 def data_quality():
     metadata = repository.metadata()
-    metrics = json.loads((ROOT / "models" / "metrics.json").read_text())
+    metrics = MODEL_METRICS
     return {
         "snapshot": {key: metadata.get(key) for key in ("schema_version", "snapshot_id", "snapshot_date", "record_count", "unique_entities", "freshness", "data_quality")},
-        "model": {key: metrics.get(key) for key in ("model_version", "trained_at", "snapshot_id", "blended", "uncertainty")},
+        "model": {key: metrics.get(key) for key in ("model_version", "trained_at", "snapshot_id", "ledger_baseline", "blended", "validation", "uncertainty")},
         "limitations": [
             "Most records do not publish a complete product lifecycle assessment.",
             "Category defaults and user scenarios fill missing fields and are marked as estimates.",
@@ -297,7 +388,7 @@ def data_quality():
 
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
 def prometheus_metrics():
-    lines = ["# HELP luma_uptime_seconds Process uptime.", "# TYPE luma_uptime_seconds gauge", f"luma_uptime_seconds {time.time() - STARTED_AT:.3f}"]
+    lines = ["# HELP luma_uptime_seconds Process uptime.", "# TYPE luma_uptime_seconds gauge", f"luma_uptime_seconds {time.monotonic() - STARTED_MONOTONIC:.3f}"]
     lines.extend(["# HELP luma_http_requests_total HTTP responses by path and status.", "# TYPE luma_http_requests_total counter"])
     for (path, status), count in sorted(REQUESTS.items()):
         safe_path = path.replace('"', "")

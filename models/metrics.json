@@ -1,148 +1,169 @@
 {
   "model_version": "3.0",
-  "trained_at": "2026-08-23T15:06:25.268153+00:00",
+  "trained_at": "2026-08-29T07:16:07.003733+00:00",
   "snapshot_id": "511869fd34bfc302",
-  "samples": 16000,
+  "samples": 15997,
   "test_samples": 3200,
   "global": {
     "samples": 3200,
-    "mae": 2.153,
-    "p90_absolute_error": 4.422,
-    "r2": 0.955
+    "mae": 2.125,
+    "p90_absolute_error": 4.317,
+    "r2": 0.959
   },
   "blended": {
     "samples": 3200,
-    "mae": 2.149,
-    "p90_absolute_error": 4.436,
-    "r2": 0.956
+    "mae": 2.113,
+    "p90_absolute_error": 4.272,
+    "r2": 0.96
+  },
+  "ledger_baseline": {
+    "samples": 3200,
+    "mae": 1.871,
+    "p90_absolute_error": 3.84,
+    "r2": 0.969
+  },
+  "validation": {
+    "scope": "Synthetic scenario-target reconstruction; not empirical lifecycle-carbon validation",
+    "split": "Random category-stratified scenario holdout",
+    "validated_for_real_lca": false,
+    "neural_mae_improvement_over_ledger": -0.242,
+    "deployment_status": "experimental_assist"
   },
   "categories": {
     "Smartphone": {
-      "samples": 200,
-      "mae": 2.41,
-      "p90_absolute_error": 4.817,
-      "r2": 0.685,
-      "global_mae": 2.42,
-      "residual_weight": 0.5
+      "samples": 189,
+      "mae": 2.128,
+      "p90_absolute_error": 4.015,
+      "r2": 0.766,
+      "global_mae": 2.136,
+      "residual_weight": 0.25
     },
     "Laptop": {
-      "samples": 200,
-      "mae": 2.109,
-      "p90_absolute_error": 4.678,
-      "r2": 0.937,
-      "global_mae": 2.139,
+      "samples": 188,
+      "mae": 2.397,
+      "p90_absolute_error": 4.638,
+      "r2": 0.923,
+      "global_mae": 2.402,
       "residual_weight": 1.0
     },
     "Tablet": {
-      "samples": 200,
-      "mae": 2.153,
-      "p90_absolute_error": 4.284,
-      "r2": 0.808,
-      "global_mae": 2.153,
-      "residual_weight": 0.75
+      "samples": 188,
+      "mae": 2.03,
+      "p90_absolute_error": 3.955,
+      "r2": 0.837,
+      "global_mae": 2.033,
+      "residual_weight": 0.5
     },
     "Television": {
-      "samples": 200,
-      "mae": 2.365,
-      "p90_absolute_error": 4.783,
-      "r2": 0.918,
-      "global_mae": 2.376,
+      "samples": 188,
+      "mae": 2.325,
+      "p90_absolute_error": 4.819,
+      "r2": 0.908,
+      "global_mae": 2.327,
       "residual_weight": 0.5
     },
     "Headphones": {
-      "samples": 200,
+      "samples": 188,
+      "mae": 2.0,
+      "p90_absolute_error": 4.03,
+      "r2": 0.504,
+      "global_mae": 2.016,
+      "residual_weight": 0.5
+    },
+    "Smartwatch": {
+      "samples": 188,
+      "mae": 1.903,
+      "p90_absolute_error": 3.895,
+      "r2": 0.57,
+      "global_mae": 1.918,
+      "residual_weight": 0.75
+    },
+    "Monitor": {
+      "samples": 189,
+      "mae": 2.227,
+      "p90_absolute_error": 4.34,
+      "r2": 0.947,
+      "global_mae": 2.227,
+      "residual_weight": 0.0
+    },
+    "Desktop": {
+      "samples": 188,
+      "mae": 2.219,
+      "p90_absolute_error": 4.731,
+      "r2": 0.929,
+      "global_mae": 2.235,
+      "residual_weight": 0.25
+    },
+    "Printer / scanner": {
+      "samples": 188,
       "mae": 1.96,
-      "p90_absolute_error": 4.107,
-      "r2": 0.54,
+      "p90_absolute_error": 4.046,
+      "r2": 0.883,
       "global_mae": 1.96,
       "residual_weight": 0.0
     },
-    "Smartwatch": {
-      "samples": 200,
-      "mae": 1.946,
-      "p90_absolute_error": 3.813,
-      "r2": 0.632,
-      "global_mae": 1.946,
-      "residual_weight": 0.0
-    },
-    "Monitor": {
-      "samples": 200,
-      "mae": 2.323,
-      "p90_absolute_error": 4.76,
-      "r2": 0.936,
-      "global_mae": 2.332,
-      "residual_weight": 0.5
-    },
-    "Desktop": {
-      "samples": 200,
-      "mae": 2.304,
-      "p90_absolute_error": 4.897,
-      "r2": 0.919,
-      "global_mae": 2.304,
-      "residual_weight": 0.0
-    },
-    "Printer / scanner": {
-      "samples": 200,
-      "mae": 2.19,
-      "p90_absolute_error": 4.618,
-      "r2": 0.872,
-      "global_mae": 2.191,
-      "residual_weight": 0.25
-    },
     "Speaker": {
-      "samples": 200,
-      "mae": 1.814,
-      "p90_absolute_error": 3.575,
-      "r2": 0.567,
-      "global_mae": 1.806,
-      "residual_weight": 0.5
-    },
-    "Camera": {
-      "samples": 200,
-      "mae": 1.938,
-      "p90_absolute_error": 4.055,
-      "r2": 0.61,
-      "global_mae": 1.942,
-      "residual_weight": 0.25
-    },
-    "Game console": {
-      "samples": 200,
-      "mae": 2.45,
-      "p90_absolute_error": 4.932,
-      "r2": 0.886,
-      "global_mae": 2.468,
+      "samples": 188,
+      "mae": 2.083,
+      "p90_absolute_error": 4.462,
+      "r2": 0.495,
+      "global_mae": 2.052,
       "residual_weight": 1.0
     },
-    "Router / network": {
-      "samples": 200,
-      "mae": 2.297,
-      "p90_absolute_error": 4.791,
-      "r2": 0.639,
-      "global_mae": 2.297,
+    "Camera": {
+      "samples": 188,
+      "mae": 1.763,
+      "p90_absolute_error": 3.53,
+      "r2": 0.593,
+      "global_mae": 1.763,
       "residual_weight": 0.0
     },
+    "Game console": {
+      "samples": 189,
+      "mae": 2.068,
+      "p90_absolute_error": 4.238,
+      "r2": 0.918,
+      "global_mae": 2.046,
+      "residual_weight": 0.75
+    },
+    "Router / network": {
+      "samples": 188,
+      "mae": 2.273,
+      "p90_absolute_error": 4.356,
+      "r2": 0.639,
+      "global_mae": 2.283,
+      "residual_weight": 0.75
+    },
     "Streaming device": {
-      "samples": 200,
-      "mae": 1.997,
-      "p90_absolute_error": 4.457,
-      "r2": 0.434,
+      "samples": 188,
+      "mae": 1.992,
+      "p90_absolute_error": 3.963,
+      "r2": 0.468,
       "global_mae": 1.992,
-      "residual_weight": 0.25
+      "residual_weight": 0.0
     },
     "Spatial computer": {
-      "samples": 200,
-      "mae": 2.151,
-      "p90_absolute_error": 4.203,
-      "r2": 0.907,
-      "global_mae": 2.145,
-      "residual_weight": 0.5
+      "samples": 189,
+      "mae": 2.528,
+      "p90_absolute_error": 5.08,
+      "r2": 0.884,
+      "global_mae": 2.719,
+      "residual_weight": 0.75
+    },
+    "E-reader": {
+      "samples": 188,
+      "mae": 2.018,
+      "p90_absolute_error": 3.725,
+      "r2": 0.508,
+      "global_mae": 2.017,
+      "residual_weight": 0.75
     },
     "Other": {
-      "samples": 200,
-      "mae": 1.982,
-      "p90_absolute_error": 3.768,
-      "r2": 0.875,
-      "global_mae": 1.982,
+      "samples": 188,
+      "mae": 2.003,
+      "p90_absolute_error": 4.014,
+      "r2": 0.873,
+      "global_mae": 2.003,
       "residual_weight": 0.0
     }
   },
@@ -160,6 +181,7 @@
     "specialist_categories": [
       "Camera",
       "Desktop",
+      "E-reader",
       "Game console",
       "Headphones",
       "Laptop",
@@ -177,21 +199,22 @@
     ],
     "blend": "Global prediction plus validation-selected category residual",
     "category_residual_weights": {
-      "Smartphone": 0.5,
+      "Smartphone": 0.25,
       "Laptop": 1.0,
-      "Tablet": 0.75,
+      "Tablet": 0.5,
       "Television": 0.5,
-      "Headphones": 0.0,
-      "Smartwatch": 0.0,
-      "Monitor": 0.5,
-      "Desktop": 0.0,
-      "Printer / scanner": 0.25,
-      "Speaker": 0.5,
-      "Camera": 0.25,
-      "Game console": 1.0,
-      "Router / network": 0.0,
-      "Streaming device": 0.25,
-      "Spatial computer": 0.5,
+      "Headphones": 0.5,
+      "Smartwatch": 0.75,
+      "Monitor": 0.0,
+      "Desktop": 0.25,
+      "Printer / scanner": 0.0,
+      "Speaker": 1.0,
+      "Camera": 0.0,
+      "Game console": 0.75,
+      "Router / network": 0.75,
+      "Streaming device": 0.0,
+      "Spatial computer": 0.75,
+      "E-reader": 0.75,
       "Other": 0.0
     }
   },
@@ -215,78 +238,79 @@
   "drift_baseline": {
     "numeric": {
       "manufacturing_kg": {
-        "median": 107.4444,
-        "q1": 54.94164,
-        "q3": 247.80945
+        "median": 100.52111,
+        "q1": 49.97729,
+        "q3": 235.17932
       },
       "active_power_w": {
-        "median": 13.40994,
-        "q1": 4.25945,
-        "q3": 39.77614
+        "median": 11.77284,
+        "q1": 3.56385,
+        "q3": 36.70366
       },
       "daily_hours": {
-        "median": 5.51644,
-        "q1": 3.91428,
-        "q3": 7.08514
+        "median": 5.48805,
+        "q1": 3.91016,
+        "q3": 7.06808
       },
       "lifespan_years": {
-        "median": 5.26178,
-        "q1": 3.88293,
-        "q3": 7.29798
+        "median": 5.31,
+        "q1": 3.91057,
+        "q3": 7.28626
       },
       "repairability": {
-        "median": 5.23566,
-        "q1": 4.08576,
-        "q3": 6.48115
+        "median": 5.24284,
+        "q1": 4.07498,
+        "q3": 6.47121
       },
       "recyclability_pct": {
-        "median": 65.00282,
-        "q1": 53.49962,
-        "q3": 76.35851
+        "median": 64.74706,
+        "q1": 53.24182,
+        "q3": 76.40505
       },
       "recycled_content_pct": {
-        "median": 19.80624,
-        "q1": 9.22169,
-        "q3": 30.9278
+        "median": 20.36351,
+        "q1": 9.45138,
+        "q3": 31.1222
       },
       "battery_wh": {
-        "median": 1.81995,
+        "median": 2.50961,
         "q1": 0.0,
-        "q3": 15.49178
+        "q3": 14.46462
       },
       "weight_kg": {
-        "median": 1.20381,
-        "q1": 0.37322,
-        "q3": 4.31849
+        "median": 0.99192,
+        "q1": 0.30629,
+        "q3": 3.66198
       },
       "transport_km": {
-        "median": 7629.11897,
-        "q1": 4031.42121,
-        "q3": 11141.19526
+        "median": 7695.68896,
+        "q1": 4130.58444,
+        "q3": 11187.25225
       },
       "grid_kg_co2_per_kwh": {
-        "median": 0.47118,
-        "q1": 0.30779,
-        "q3": 0.64628
+        "median": 0.47109,
+        "q1": 0.30874,
+        "q3": 0.64489
       }
     },
     "category_share": {
-      "Printer / scanner": 0.0625,
-      "Headphones": 0.0625,
-      "Monitor": 0.0625,
-      "Smartphone": 0.0625,
-      "Speaker": 0.0625,
-      "Laptop": 0.0625,
-      "Desktop": 0.0625,
-      "Camera": 0.0625,
-      "Smartwatch": 0.0625,
-      "Game console": 0.0625,
-      "Spatial computer": 0.0625,
-      "Television": 0.0625,
-      "Router / network": 0.0625,
-      "Tablet": 0.0625,
-      "Other": 0.0625,
-      "Streaming device": 0.0625
+      "Other": 0.05882,
+      "Camera": 0.05882,
+      "Television": 0.05882,
+      "Spatial computer": 0.05882,
+      "Headphones": 0.05882,
+      "Router / network": 0.05882,
+      "Game console": 0.05882,
+      "Streaming device": 0.05882,
+      "Desktop": 0.05882,
+      "Printer / scanner": 0.05882,
+      "Speaker": 0.05882,
+      "E-reader": 0.05882,
+      "Smartwatch": 0.05882,
+      "Tablet": 0.05882,
+      "Laptop": 0.05882,
+      "Smartphone": 0.05882,
+      "Monitor": 0.05882
     }
   }
 }

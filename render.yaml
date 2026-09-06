@@ -12,5 +12,8 @@ services:
     runtime: docker
     plan: free
     dockerCommand: uvicorn api:app --host 0.0.0.0 --port=$PORT
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://luma-gadget-impact.onrender.com
     autoDeploy: true
