@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local machine metadata and deployment credentials
+.DS_Store
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.kdbx
+*.secret
+id_rsa*
+id_ed25519*
+.aws/
+.ssh/
+secrets/
+*credentials*.json

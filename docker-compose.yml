@@ -6,6 +6,9 @@ services:
     environment:
       ALLOWED_ORIGINS: "http://localhost:8501"
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
 
   api:
     build: .
@@ -15,8 +18,11 @@ services:
     environment:
       ALLOWED_ORIGINS: "http://localhost:8501"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true

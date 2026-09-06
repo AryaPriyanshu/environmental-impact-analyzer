@@ -7,17 +7,24 @@ complete lifecycle assessment unless the manufacturer source reports one.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import math
 import os
 import re
+import shutil
+import tempfile
 import unicodedata
 from datetime import date, datetime, timezone
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+from urllib.parse import quote, urlsplit
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     from .utils import CATEGORY_BASELINES
@@ -31,7 +38,12 @@ OUTPUT = DATA_DIR / "official_gadgets.csv"
 METADATA = DATA_DIR / "source_metadata.json"
 REPAIR_PROFILES = DATA_DIR / "repair_profiles.csv"
 GRID_OUTPUT = DATA_DIR / "grid_intensity.csv"
-TIMEOUT = 120
+CONNECT_TIMEOUT = 10
+READ_TIMEOUT = 120
+TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+MAX_JSON_DOWNLOAD_BYTES = 128 * 1024 * 1024
+MAX_CSV_DOWNLOAD_BYTES = 256 * 1024 * 1024
 RETRIEVED_AT = datetime.now(timezone.utc).isoformat()
 USER_AGENT = "GadgetImpactAnalyser/3.0 (+https://github.com/AryaPriyanshu/environmental-impact-analyzer)"
 
@@ -118,8 +130,8 @@ OPEN_REPAIR_CATEGORY_MAP = {
 def _number(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
         number = float(str(value).strip().replace(",", "."))
-        return default if number != number else number
-    except (TypeError, ValueError):
+        return number if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -142,21 +154,160 @@ def _stable_id(*parts: Any, length: int = 16) -> str:
     return hashlib.sha1("|".join(_canonical(part) for part in parts).encode()).hexdigest()[:length]
 
 
+def _safe_id_component(value: Any, *fallback_parts: Any) -> str:
+    component = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip(".-")[:160]
+    return component or _stable_id(*(fallback_parts or (value,)))
+
+
 def _session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json, text/csv;q=0.9, */*;q=0.8"})
+    retries = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
     return session
 
 
-def _fetch_json(url: str, **kwargs: Any) -> Any:
+def _validate_download_url(url: Any, *, allowed_host_suffixes: tuple[str, ...] = ()) -> str:
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise RuntimeError("download URL must be a non-empty string without surrounding whitespace")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("download URL is malformed") from exc
+    hostname = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme != "https" or not hostname or parsed.username or parsed.password or port not in (None, 443):
+        raise RuntimeError("download URL must be credential-free HTTPS on the default port")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise RuntimeError("download URL must not target localhost")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise RuntimeError("download URL must not target a private or reserved address")
+    if allowed_host_suffixes and not any(
+        hostname == suffix.casefold() or hostname.endswith("." + suffix.casefold())
+        for suffix in allowed_host_suffixes
+    ):
+        raise RuntimeError(f"download host is not allowed: {hostname}")
+    return url
+
+
+def _public_source_url(value: Any, fallback: str) -> str:
+    try:
+        return _validate_download_url(value)
+    except RuntimeError:
+        return fallback
+
+
+def _bounded_response_bytes(
+    response: requests.Response,
+    *,
+    max_bytes: int,
+    label: str,
+    allowed_host_suffixes: tuple[str, ...] = (),
+) -> bytes:
+    response.raise_for_status()
+    _validate_download_url(response.url, allowed_host_suffixes=allowed_host_suffixes)
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise RuntimeError(f"{label} returned an invalid Content-Length") from exc
+        if declared_length < 0 or declared_length > max_bytes:
+            raise RuntimeError(f"{label} exceeds the {max_bytes}-byte download limit")
+    payload = bytearray()
+    for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+        if not chunk:
+            continue
+        if len(payload) + len(chunk) > max_bytes:
+            raise RuntimeError(f"{label} exceeds the {max_bytes}-byte download limit")
+        payload.extend(chunk)
+    return bytes(payload)
+
+
+def _download_bytes(
+    session: requests.Session,
+    url: str,
+    *,
+    max_bytes: int,
+    label: str,
+    allowed_host_suffixes: tuple[str, ...] = (),
+    **kwargs: Any,
+) -> bytes:
+    _validate_download_url(url, allowed_host_suffixes=allowed_host_suffixes)
+    with session.get(url, timeout=TIMEOUT, stream=True, **kwargs) as response:
+        return _bounded_response_bytes(
+            response,
+            max_bytes=max_bytes,
+            label=label,
+            allowed_host_suffixes=allowed_host_suffixes,
+        )
+
+
+def _json_bytes(payload: bytes, label: str) -> Any:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"invalid JSON number: {value}")
+
+    try:
+        return json.loads(payload.decode("utf-8"), parse_constant=reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise RuntimeError(f"{label} returned malformed JSON") from exc
+
+
+def _session_json(
+    session: requests.Session,
+    url: str,
+    *,
+    label: str,
+    allowed_host_suffixes: tuple[str, ...] = (),
+    **kwargs: Any,
+) -> Any:
+    payload = _download_bytes(
+        session,
+        url,
+        max_bytes=MAX_JSON_DOWNLOAD_BYTES,
+        label=label,
+        allowed_host_suffixes=allowed_host_suffixes,
+        **kwargs,
+    )
+    return _json_bytes(payload, label)
+
+
+def _fetch_json(
+    url: str,
+    *,
+    allowed_host_suffixes: tuple[str, ...] = (),
+    **kwargs: Any,
+) -> Any:
     with _session() as session:
-        response = session.get(url, timeout=TIMEOUT, **kwargs)
-        response.raise_for_status()
-        return response.json()
+        return _session_json(
+            session,
+            url,
+            label=url,
+            allowed_host_suffixes=allowed_host_suffixes,
+            **kwargs,
+        )
 
 
 def _fetch_socrata(dataset_id: str, *, select: str = "", where: str = "", order: str = "pd_id", page_size: int = 50000) -> list[dict]:
     """Fetch a complete Socrata result set with bounded pagination."""
+    if not isinstance(dataset_id, str) or re.fullmatch(r"[a-z0-9]{4}-[a-z0-9]{4}", dataset_id) is None:
+        raise ValueError("dataset_id is malformed")
+    if type(page_size) is not int or not 1 <= page_size <= 50_000:
+        raise ValueError("page_size must be an integer from 1 to 50000")
     resource = f"https://data.energystar.gov/resource/{dataset_id}.json"
     rows: list[dict] = []
     offset = 0
@@ -169,9 +320,17 @@ def _fetch_socrata(dataset_id: str, *, select: str = "", where: str = "", order:
                 params["$where"] = where
             if order:
                 params["$order"] = order
-            response = session.get(resource, params=params, timeout=TIMEOUT)
-            response.raise_for_status()
-            batch = response.json()
+            batch = _session_json(
+                session,
+                resource,
+                label=f"ENERGY STAR {dataset_id} page",
+                allowed_host_suffixes=("data.energystar.gov",),
+                params=params,
+            )
+            if not isinstance(batch, list) or any(not isinstance(item, dict) for item in batch):
+                raise RuntimeError(f"ENERGY STAR {dataset_id} returned an invalid page")
+            if len(batch) > page_size:
+                raise RuntimeError(f"ENERGY STAR {dataset_id} exceeded the requested page size")
             rows.extend(batch)
             if len(batch) < page_size:
                 break
@@ -218,6 +377,7 @@ def _estimated_fields(category: str) -> dict[str, Any]:
         "grid_kg_co2_per_kwh": 0.42,
         "software_support_years": None,
         "observed_battery": False,
+        "observed_manufacturing": False,
         "observed_durability": False,
         "observed_software_support": False,
     }
@@ -226,16 +386,17 @@ def _estimated_fields(category: str) -> dict[str, Any]:
 def _base_record(raw: dict, dataset_id: str, source_name: str, category: str) -> dict:
     model = raw.get("model_name") or raw.get("model_number") or "Unnamed model"
     number = raw.get("model_number") or model
+    source_product_id = _safe_id_component(raw.get("pd_id"), model, number)
     record = _estimated_fields(category)
     record.update(
         {
-            "product_id": f"es-{dataset_id}-{raw.get('pd_id') or _stable_id(model, number)}",
+            "product_id": f"es-{dataset_id}-{source_product_id}",
             "name": str(model),
             "model_number": str(number),
             "manufacturer": raw.get("brand_name") or raw.get("energy_star_partner") or "Unknown",
             "category": category,
             "source_name": source_name,
-            "source_url": f"https://data.energystar.gov/resource/{dataset_id}.json?pd_id={raw.get('pd_id')}",
+            "source_url": f"https://data.energystar.gov/resource/{dataset_id}.json?pd_id={quote(str(raw.get('pd_id') or ''), safe='')}",
             "source_type": "energy_certification",
             "source_license": "U.S. government public data; see source terms",
             "source_retrieved_at": RETRIEVED_AT,
@@ -353,16 +514,25 @@ def fetch_eprel() -> tuple[list[dict], dict]:
     hits, page, total = [], 1, None
     with _session() as session:
         while total is None or len(hits) < total:
-            response = session.get(
+            payload = _session_json(
+                session,
                 EPREL_ENDPOINT,
+                label="EU EPREL product page",
+                allowed_host_suffixes=("eprel.ec.europa.eu",),
                 params={"_page": page, "_limit": 100, "sort0": "onMarketStartDateTS", "order0": "DESC"},
                 headers=headers,
-                timeout=TIMEOUT,
             )
-            response.raise_for_status()
-            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("EPREL returned an invalid response")
             batch = payload.get("hits", [])
-            total = int(payload.get("size", len(batch)))
+            if not isinstance(batch, list) or any(not isinstance(item, dict) for item in batch):
+                raise RuntimeError("EPREL returned an invalid product list")
+            try:
+                total = int(payload.get("size", len(batch)))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise RuntimeError("EPREL returned an invalid result count") from exc
+            if total < 0 or total > 10_000:
+                raise RuntimeError("EPREL result count exceeded safety limit")
             if not batch:
                 break
             hits.extend(batch)
@@ -374,6 +544,11 @@ def fetch_eprel() -> tuple[list[dict], dict]:
     for raw in hits:
         category = "Tablet" if str(raw.get("deviceType", "")).upper() == "TABLET" else "Smartphone"
         registration = raw.get("eprelRegistrationNumber") or raw.get("registrationNumber") or _stable_id(raw.get("supplierOrTrademark"), raw.get("modelIdentifier"))
+        registration_text = _safe_id_component(
+            registration,
+            raw.get("supplierOrTrademark"),
+            raw.get("modelIdentifier"),
+        )
         repair_native = _number(raw.get("repairabilityIndex"))
         battery_mah = _number(raw.get("ratedBatteryCapacity"))
         battery_cycles_raw = _number(raw.get("batteryEnduranceInCycles"))
@@ -384,13 +559,13 @@ def fetch_eprel() -> tuple[list[dict], dict]:
         record = _estimated_fields(category)
         record.update(
             {
-                "product_id": f"eprel-{registration}",
+                "product_id": f"eprel-{registration_text}",
                 "name": str(raw.get("modelIdentifier") or "Unnamed model"),
-                "model_number": str(raw.get("modelIdentifier") or registration),
+                "model_number": str(raw.get("modelIdentifier") or registration_text),
                 "manufacturer": str(raw.get("supplierOrTrademark") or "Unknown"),
                 "category": category,
                 "source_name": "EU EPREL Smartphones & Tablets",
-                "source_url": f"https://eprel.ec.europa.eu/screen/product/smartphonestablets20231669/{registration}",
+                "source_url": f"https://eprel.ec.europa.eu/screen/product/smartphonestablets20231669/{quote(registration_text, safe='')}",
                 "source_type": "regulatory_registry",
                 "source_license": "EU public registry; reuse subject to EPREL terms",
                 "source_retrieved_at": RETRIEVED_AT,
@@ -430,14 +605,33 @@ def fetch_eprel() -> tuple[list[dict], dict]:
 
 
 def fetch_repairability() -> tuple[list[dict], dict]:
-    metadata = _fetch_json(REPAIR_DATASET_API)
-    csv_resources = [item for item in metadata.get("resources", []) if item.get("format", "").lower() == "csv" and "dernière version" in item.get("title", "").casefold()]
+    metadata = _fetch_json(REPAIR_DATASET_API, allowed_host_suffixes=("data.gouv.fr",))
+    if not isinstance(metadata, dict):
+        raise RuntimeError("Official repairability metadata is not an object")
+    resources = metadata.get("resources")
+    if not isinstance(resources, list) or len(resources) > 10_000 or any(not isinstance(item, dict) for item in resources):
+        raise RuntimeError("Official repairability metadata has an invalid resources list")
+    csv_resources = [item for item in resources if str(item.get("format", "")).lower() == "csv" and "dernière version" in str(item.get("title", "")).casefold()]
     if not csv_resources:
-        csv_resources = [item for item in metadata.get("resources", []) if item.get("format", "").lower() == "csv"]
+        csv_resources = [item for item in resources if str(item.get("format", "")).lower() == "csv"]
     if not csv_resources:
         raise RuntimeError("Official repairability dataset has no CSV resource")
     resource = csv_resources[0]
-    frame = pd.read_csv(resource["url"], low_memory=False)
+    resource_url = _validate_download_url(
+        resource.get("url"),
+        allowed_host_suffixes=("data.gouv.fr",),
+    )
+    with _session() as session:
+        csv_payload = _download_bytes(
+            session,
+            resource_url,
+            max_bytes=MAX_CSV_DOWNLOAD_BYTES,
+            label="French repairability CSV",
+            allowed_host_suffixes=("data.gouv.fr",),
+        )
+    frame = pd.read_csv(BytesIO(csv_payload), low_memory=False)
+    if "categorie_produit" not in frame:
+        raise RuntimeError("Official repairability CSV is missing categorie_produit")
     mapping = {"smartphone": "Smartphone", "ordinateur portable": "Laptop", "tablette": "Tablet"}
     normalized = frame["categorie_produit"].astype(str).str.casefold()
     frame = frame[normalized.isin(mapping)].copy()
@@ -449,13 +643,13 @@ def fetch_repairability() -> tuple[list[dict], dict]:
         repair = _number(raw.get("note_ir"), 5.0)
         record.update(
             {
-                "product_id": f"fr-{raw.get('id_unique') or _stable_id(raw.get('nom_metteur_sur_le_marche'), raw.get('id_modele'))}",
+                "product_id": f"fr-{_safe_id_component(raw.get('id_unique'), raw.get('nom_metteur_sur_le_marche'), raw.get('id_modele'))}",
                 "name": str(raw.get("nom_modele") or raw.get("id_modele")),
                 "model_number": str(raw.get("id_modele") or raw.get("nom_modele")),
                 "manufacturer": str(raw.get("nom_metteur_sur_le_marche") or "Unknown"),
                 "category": category,
                 "source_name": "French Repairability Index",
-                "source_url": raw.get("url_tableau_detail_notation") if pd.notna(raw.get("url_tableau_detail_notation")) else REPAIR_PAGE,
+                "source_url": _public_source_url(raw.get("url_tableau_detail_notation"), REPAIR_PAGE),
                 "source_type": "regulatory_repair_index",
                 "source_license": "Licence Ouverte / Open Licence 2.0",
                 "source_retrieved_at": RETRIEVED_AT,
@@ -473,15 +667,20 @@ def fetch_repairability() -> tuple[list[dict], dict]:
             }
         )
         records.append(record)
-    source = _source_record("French Repairability Index", REPAIR_PAGE, len(records), "Licence Ouverte / Open Licence 2.0", resource["url"])
+    source = _source_record("French Repairability Index", REPAIR_PAGE, len(records), "Licence Ouverte / Open Licence 2.0", resource_url)
     return records, source
 
 
 def fetch_ifixit() -> tuple[list[dict], dict]:
     with _session() as session:
-        response = session.get(IFIXIT_CSV, timeout=TIMEOUT)
-        response.raise_for_status()
-    frame = pd.read_csv(StringIO(response.text))
+        csv_payload = _download_bytes(
+            session,
+            IFIXIT_CSV,
+            max_bytes=MAX_CSV_DOWNLOAD_BYTES,
+            label="iFixit repairability CSV",
+            allowed_host_suffixes=("google.com", "googleusercontent.com"),
+        )
+    frame = pd.read_csv(BytesIO(csv_payload))
     records = []
     for position, raw in frame.iterrows():
         record = _estimated_fields("Smartphone")
@@ -524,6 +723,7 @@ def manufacturer_report_records() -> tuple[list[dict], list[dict]]:
         share = item.get("manufacturing_share")
         if share is not None:
             record["manufacturing_kg"] = round(item["total"] * share, 2)
+            record["observed_manufacturing"] = True
         record.update(
             {
                 "product_id": f"report-{_stable_id(item['manufacturer'], item['name'], item['year'])}",
@@ -560,10 +760,15 @@ def manufacturer_report_records() -> tuple[list[dict], list[dict]]:
 
 def fetch_open_repair_profiles() -> tuple[pd.DataFrame, dict]:
     with _session() as session:
-        response = session.get(OPEN_REPAIR_CSV, timeout=TIMEOUT)
-        response.raise_for_status()
+        csv_payload = _download_bytes(
+            session,
+            OPEN_REPAIR_CSV,
+            max_bytes=MAX_CSV_DOWNLOAD_BYTES,
+            label="Open Repair CSV",
+            allowed_host_suffixes=("githubusercontent.com",),
+        )
     usecols = ["product_category", "brand", "product_age", "repair_status", "repair_barrier_if_end_of_life"]
-    frame = pd.read_csv(BytesIO(response.content), usecols=usecols, low_memory=False)
+    frame = pd.read_csv(BytesIO(csv_payload), usecols=usecols, low_memory=False)
     frame["category"] = frame["product_category"].astype(str).str.strip().str.casefold().map(OPEN_REPAIR_CATEGORY_MAP)
     frame = frame[frame["category"].notna()].copy()
     frame["manufacturer"] = frame["brand"].fillna("Unknown").astype(str).str.strip().replace("", "Unknown")
@@ -595,7 +800,6 @@ def fetch_open_repair_profiles() -> tuple[pd.DataFrame, dict]:
     profiles["profile_scope"] = "Aggregated brand/category repair events; not model-specific"
     profiles["source_url"] = OPEN_REPAIR_PAGE
     profiles["source_retrieved_at"] = RETRIEVED_AT
-    profiles.to_csv(REPAIR_PROFILES, index=False)
     source = _source_record("Open Repair Data", OPEN_REPAIR_PAGE, len(frame), "CC BY-SA 4.0", OPEN_REPAIR_CSV)
     source["profiles"] = len(profiles)
     return profiles, source
@@ -603,9 +807,14 @@ def fetch_open_repair_profiles() -> tuple[pd.DataFrame, dict]:
 
 def fetch_grid_intensity() -> tuple[pd.DataFrame, dict]:
     with _session() as session:
-        response = session.get(GRID_CSV, timeout=TIMEOUT)
-        response.raise_for_status()
-    frame = pd.read_csv(StringIO(response.text))
+        csv_payload = _download_bytes(
+            session,
+            GRID_CSV,
+            max_bytes=MAX_CSV_DOWNLOAD_BYTES,
+            label="electricity carbon-intensity CSV",
+            allowed_host_suffixes=("ourworldindata.org",),
+        )
+    frame = pd.read_csv(BytesIO(csv_payload))
     value_columns = [column for column in frame.columns if "carbon intensity" in column.casefold()]
     if not value_columns:
         raise RuntimeError("Carbon-intensity column not found in electricity dataset")
@@ -619,7 +828,7 @@ def fetch_grid_intensity() -> tuple[pd.DataFrame, dict]:
     grid["source_name"] = "Our World in Data / Ember"
     grid["source_url"] = GRID_PAGE
     grid["source_retrieved_at"] = RETRIEVED_AT
-    grid.sort_values("region").to_csv(GRID_OUTPUT, index=False)
+    grid = grid.sort_values("region")
     source = _source_record("Electricity carbon intensity (Our World in Data / Ember)", GRID_PAGE, len(grid), "CC BY 4.0; see source notes", GRID_CSV)
     source["latest_year"] = int(grid["year"].max())
     return grid, source
@@ -663,8 +872,81 @@ def resolve_entities(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.drop(columns=["_rank"])
 
 
+def _csv_payload(frame: pd.DataFrame) -> bytes:
+    return frame.to_csv(index=False, lineterminator="\n").encode("utf-8")
+
+
+def _atomic_publish(payloads: Mapping[Path, bytes]) -> None:
+    """Publish a set of files atomically per path, rolling back on failure.
+
+    Every new file and backup lives beside its destination, so ``os.replace``
+    never crosses a filesystem boundary.  Metadata should be supplied last: it
+    is the public marker that the accompanying snapshot finished publishing.
+    """
+    prepared: dict[Path, Path] = {}
+    backups: dict[Path, Path | None] = {}
+    replaced: list[Path] = []
+    try:
+        for target, payload in payloads.items():
+            if not isinstance(target, Path) or not isinstance(payload, bytes):
+                raise TypeError("atomic publish requires Path-to-bytes entries")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o644)
+            prepared[target] = temporary
+
+        # Preserve the complete prior set before the first replacement.  Hard
+        # links are cheap and keep the rollback on the same filesystem; copy is
+        # a portable fallback for filesystems that disallow links.
+        for target in payloads:
+            if not target.exists():
+                backups[target] = None
+                continue
+            descriptor, backup_name = tempfile.mkstemp(
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".bak",
+            )
+            os.close(descriptor)
+            backup = Path(backup_name)
+            backup.unlink()
+            try:
+                os.link(target, backup)
+            except OSError:
+                shutil.copy2(target, backup)
+            backups[target] = backup
+
+        for target, temporary in prepared.items():
+            os.replace(temporary, target)
+            replaced.append(target)
+    except Exception:
+        for target in reversed(replaced):
+            backup = backups.get(target)
+            if backup is None:
+                target.unlink(missing_ok=True)
+            elif backup.exists():
+                os.replace(backup, target)
+        raise
+    finally:
+        for temporary in prepared.values():
+            temporary.unlink(missing_ok=True)
+        for backup in backups.values():
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+
+
 def sync() -> pd.DataFrame:
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     records, sources = fetch_energy_star()
     eprel_records, eprel_source = fetch_eprel()
     records.extend(eprel_records)
@@ -681,7 +963,7 @@ def sync() -> pd.DataFrame:
 
     repair_profiles, open_repair_source = fetch_open_repair_profiles()
     sources.append(open_repair_source)
-    _, grid_source = fetch_grid_intensity()
+    grid, grid_source = fetch_grid_intensity()
     sources.append(grid_source)
 
     frame = pd.DataFrame(records)
@@ -692,8 +974,6 @@ def sync() -> pd.DataFrame:
     frame = frame.merge(repair_profiles[profile_columns], on=["category", "canonical_manufacturer"], how="left")
     frame = frame.rename(columns={"fixed_rate": "brand_repair_success_rate"})
     frame = frame.sort_values(["category", "manufacturer", "name", "source_name"]).reset_index(drop=True)
-    frame.to_csv(OUTPUT, index=False)
-
     digest_columns = ["product_id", "entity_key", "source_name", "market_date", "observed_field_count"]
     snapshot_id = hashlib.sha256(frame[digest_columns].to_csv(index=False).encode()).hexdigest()[:16]
     summary = {
@@ -714,8 +994,17 @@ def sync() -> pd.DataFrame:
         "license_note": "Source-specific licences and terms apply. Every record retains its source URL and retrieval time.",
         "method_note": "Observed source fields are kept separate from category assumptions. Entity resolution groups complementary evidence without inventing merged measurements.",
     }
-    METADATA.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    summary_document = json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    _atomic_publish(
+        {
+            REPAIR_PROFILES: _csv_payload(repair_profiles),
+            GRID_OUTPUT: _csv_payload(grid),
+            OUTPUT: _csv_payload(frame),
+            # Publish the snapshot marker last, after every data artifact.
+            METADATA: summary_document.encode("utf-8"),
+        }
+    )
+    print(summary_document, end="")
     return frame
 
 

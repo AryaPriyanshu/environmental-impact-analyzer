@@ -1,15 +1,14 @@
 """Luma: evidence-first environmental intelligence for consumer electronics."""
 from __future__ import annotations
 
+import copy
 import html
 import json
+import math
 import re
-from dataclasses import asdict
 from pathlib import Path
-from urllib.parse import quote
 
 import altair as alt
-import joblib
 import pandas as pd
 import streamlit as st
 
@@ -21,9 +20,15 @@ from src.device_search import (
     prepare_catalog_search,
     search_catalog_frame,
 )
+from src.decisions import annual_use_carbon, estimated_repair_footprint, replacement_decision
+from src.evidence import evidence_ledger
+from src.exporting import csv_bytes
+from src.modeling import load_model_artifact, predict_model_diagnostics
+from src.projects import ProjectBundle, ProjectError
 from src.reporting import assessment_pdf, comparison_pdf
+from src.scenarios import ASSESSMENT_INPUT_FIELDS, Scenario, ScenarioError
 from src.train_model import FEATURES
-from src.utils import CATEGORY_BASELINES, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, impact_category, recommendations
+from src.utils import CATEGORY_BASELINES, SCORING_VERSION, calculate_assessment, explanation, feature_defaults, has_product_environmental_evidence, impact_category, recommendations
 
 
 ROOT = Path(__file__).parent
@@ -42,7 +47,17 @@ def _query_value(key: str, fallback: str = "") -> str:
     return value[-1] if isinstance(value, list) and value else str(value or fallback)
 
 
-query_theme = _query_value("theme")
+scenario_token = _query_value("scenario")
+linked_scenario: Scenario | None = None
+linked_scenario_error = ""
+if scenario_token:
+    try:
+        linked_scenario = Scenario.from_token(scenario_token)
+    except ScenarioError as exc:
+        linked_scenario_error = str(exc)
+
+explicit_theme = _query_value("theme")
+query_theme = explicit_theme if explicit_theme in {"light", "dark"} else linked_scenario.theme if linked_scenario is not None else "light"
 if "ui_theme" not in st.session_state:
     st.session_state.ui_theme = query_theme if query_theme in {"light", "dark"} else "light"
 elif query_theme in {"light", "dark"} and query_theme != st.session_state.ui_theme:
@@ -105,7 +120,7 @@ html{scroll-behavior:smooth}.stApp{background:var(--paper);color:var(--ink)}
 [data-testid="stHeader"]{background:transparent}.block-container{max-width:1420px;padding:1.15rem 2rem 3.6rem;animation:page-in .48s ease both}.stMainBlockContainer{transform:none!important}
 h1,h2,h3,h4,[data-testid="stMetricValue"]{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;letter-spacing:-.035em;color:var(--ink)}
 p,label,span,div{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.stCaption,.stMarkdown p{color:var(--muted)}
-.top-brand{display:flex;align-items:center;gap:.78rem;padding:.42rem 0 .8rem}.brand-orb{width:31px;height:31px;border-radius:50%;border:1px solid #70e2a7;background:#09110e;position:relative;box-shadow:inset 0 0 0 7px #16372a}.brand-orb:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:var(--bright);right:-2px;top:2px}.brand-name{font-weight:800;font-size:.95rem;letter-spacing:.16em;color:var(--ink)}.brand-note{font-size:.71rem;color:var(--muted);border-left:1px solid var(--line);padding-left:.75rem}
+.top-brand{display:flex;align-items:center;gap:.78rem;padding:.42rem 0 .8rem}.brand-orb{width:31px;height:31px;border-radius:50%;border:1px solid var(--green);background:var(--card);position:relative;box-shadow:inset 0 0 0 7px var(--mint)}.brand-orb:after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:var(--bright);right:-2px;top:2px}.brand-name{font-weight:800;font-size:.95rem;letter-spacing:.16em;color:var(--ink)}.brand-note{font-size:.71rem;color:var(--muted);border-left:1px solid var(--line);padding-left:.75rem}
 .hero{position:relative;overflow:hidden;min-height:370px;border-radius:30px;padding:3.25rem 3.5rem;background:linear-gradient(125deg,__HERO_A__,__HERO_B__);box-shadow:0 30px 76px rgba(6,39,25,.22);isolation:isolate;color:white}
 .hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 81% 28%,rgba(98,242,163,.19),transparent 28%),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px);background-size:auto,38px 38px,38px 38px;z-index:-1}.hero:after{content:"";position:absolute;width:320px;height:320px;border-radius:50%;right:-100px;bottom:-160px;background:#60e8a0;filter:blur(80px);opacity:.14;animation:breathe 6s ease-in-out infinite;z-index:-1}
 .hero-content{position:relative;z-index:3;max-width:735px;animation:rise .7s .06s ease both}.eyebrow{display:inline-flex;align-items:center;gap:.48rem;padding:.34rem .7rem;border:1px solid rgba(152,242,191,.32);background:rgba(150,239,187,.10);border-radius:999px;color:#a7f4c8;font-size:.69rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.eyebrow:before{content:"";width:6px;height:6px;border-radius:50%;background:#65e7a0;box-shadow:0 0 0 5px rgba(101,231,160,.10)}
@@ -121,10 +136,11 @@ p,label,span,div{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFon
 .saved-card{padding:1rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:16px;margin:.5rem 0}.saved-card strong{color:var(--ink)}.saved-card span{color:var(--muted);font-size:.74rem}.method-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:.65rem;align-items:center;margin:1rem 0}.flow-node{padding:1rem;background:var(--card);border:1px solid var(--line);border-radius:15px;text-align:center;color:var(--ink);font-weight:700;font-size:.78rem}.flow-node span{display:block;color:var(--muted);font-weight:400;font-size:.68rem;margin-top:.25rem}.flow-arrow{color:var(--green);font-weight:900}
 button[kind="primary"],.stDownloadButton button,.stLinkButton a{border-radius:11px!important;transition:transform .2s ease,box-shadow .2s ease!important}.stDownloadButton button{background:var(--button-bg)!important;border:1px solid var(--button-bg)!important;color:var(--button-ink)!important}.stDownloadButton button p,.stDownloadButton button span,.stDownloadButton button div{color:var(--button-ink)!important;opacity:1!important;font-weight:750!important}.stLinkButton a{background:var(--card2)!important;border:1px solid var(--line)!important;color:var(--ink)!important}.stLinkButton a p,.stLinkButton a span,.stLinkButton a div{color:var(--ink)!important;opacity:1!important}.stDownloadButton button:hover,.stLinkButton a:hover,button[kind="primary"]:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(22,111,69,.24)}.stDownloadButton button:hover{filter:brightness(1.06)}.stLinkButton a:hover{background:var(--mint)!important;border-color:var(--bright)!important}
 button[kind="secondary"]{background:var(--card2)!important;border-color:var(--line)!important;color:var(--ink)!important}button[kind="secondary"] p,button[kind="secondary"] span,button[kind="secondary"] div{color:var(--ink)!important;opacity:1!important}button[kind="secondary"]:hover{background:var(--mint)!important;border-color:var(--bright)!important}
-.stTabs > div > div:has(> [data-baseweb="tab-list"]){position:sticky;top:.55rem;z-index:100}.stTabs [data-baseweb="tab-list"]{position:relative;gap:.25rem;padding:.36rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:1rem;overflow-x:auto;box-shadow:0 12px 32px rgba(0,0,0,.16);backdrop-filter:blur(16px)}.stTabs [data-baseweb="tab"]{padding:.55rem .88rem;color:var(--muted);border-radius:10px;transition:background .2s ease,color .2s ease,transform .2s ease}.stTabs [data-baseweb="tab"]:hover{background:var(--mint);color:var(--green);transform:translateY(-1px)}.stTabs [aria-selected="true"]{color:var(--green)!important;background:var(--card2)!important;box-shadow:0 5px 14px rgba(24,72,45,.08)}.stTabs [data-baseweb="tab"] p{color:inherit!important;white-space:nowrap}
+.stDownloadButton button[kind="secondary"]{background:var(--button-bg)!important;border-color:var(--button-bg)!important;color:var(--button-ink)!important}.stDownloadButton button[kind="secondary"] p,.stDownloadButton button[kind="secondary"] span,.stDownloadButton button[kind="secondary"] div{color:var(--button-ink)!important;opacity:1!important}
+.stTabs > div > div:has(> [data-baseweb="tab-list"]){position:sticky;top:4rem;z-index:100}.stTabs [data-baseweb="tab-list"]{position:relative;gap:.25rem;padding:.36rem;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:1rem;overflow-x:auto;box-shadow:0 12px 32px rgba(0,0,0,.16);backdrop-filter:blur(16px)}.stTabs [data-baseweb="tab"]{padding:.55rem .88rem;color:var(--muted);border-radius:10px;transition:background .2s ease,color .2s ease,transform .2s ease}.stTabs [data-baseweb="tab"]:hover{background:var(--mint);color:var(--green);transform:translateY(-1px)}.stTabs [aria-selected="true"]{color:var(--green)!important;background:var(--card2)!important;box-shadow:0 5px 14px rgba(24,72,45,.08)}.stTabs [data-baseweb="tab"] p{color:inherit!important;white-space:nowrap}
 .stTabs [data-baseweb="tab-highlight"]{display:none}
 .stTextInput input,.stNumberInput input,[data-baseweb="select"]>div,.stMultiSelect [data-baseweb="select"]>div{border-radius:11px!important;background:var(--card)!important;color:var(--ink)!important;border-color:var(--line)!important}.stTextInput input::placeholder,.stNumberInput input::placeholder,[data-baseweb="select"] input::placeholder{color:var(--muted)!important;opacity:1!important}[data-baseweb="select"] div{color:var(--ink)!important}[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:var(--card)!important;border:1px solid var(--line)!important}[role="option"]{background:var(--card)!important;color:var(--ink)!important}[role="option"]:hover,[role="option"][aria-selected="true"]{background:var(--mint)!important}.stTextInput input:focus,.stNumberInput input:focus,[data-baseweb="select"]>div:focus-within{border-color:var(--bright)!important;box-shadow:0 0 0 3px rgba(76,221,147,.13)!important}[data-testid="stDataFrame"]{border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 8px 28px rgba(25,60,39,.05)}[data-testid="stExpander"]{background:var(--card);border-color:var(--line)!important;border-radius:14px!important}[data-testid="stMetric"]{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:.8rem}
-[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p,[data-testid="stRadio"] label p,[data-testid="stCheckbox"] label p{color:var(--ink)!important;opacity:1!important}[data-testid="stMetricLabel"] p{color:var(--muted)!important;opacity:1!important}.stAlert{border-radius:14px;background:var(--card2)!important;border:1px solid var(--line)!important}.stAlert p,.stAlert div{color:var(--ink)!important;opacity:1!important}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+[data-testid="stToggle"] label p,[data-testid="stWidgetLabel"] p,[data-testid="stRadio"] label p,[data-testid="stCheckbox"] label p{color:var(--ink)!important;opacity:1!important}[data-testid="stMetricLabel"] p{color:var(--muted)!important;opacity:1!important}[data-testid="stMetricValue"]>div{font-size:clamp(1.15rem,2vw,1.5rem)!important;line-height:1.15!important}.stAlert{border-radius:14px;background:var(--card2)!important;border:1px solid var(--line)!important}.stAlert p,.stAlert div{color:var(--ink)!important;opacity:1!important}.stCodeBlock{border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .data-table-shell{width:100%;max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--table-bg);box-shadow:0 12px 34px rgba(0,0,0,.18);scrollbar-color:var(--green) var(--table-bg);scrollbar-width:thin;-webkit-overflow-scrolling:touch}.data-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:var(--table-bg);color:var(--table-ink);font-size:.76rem;line-height:1.35}.data-table th{position:sticky;top:0;z-index:2;padding:.72rem .7rem;background:var(--table-head);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;font-weight:750}.data-table td{max-width:290px;padding:.65rem .7rem;background:var(--table-bg);color:var(--table-ink);border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.data-table tbody tr:nth-child(even) td{background:var(--table-alt)}.data-table tbody tr:hover td{background:var(--mint);color:var(--ink)}.data-table th:last-child,.data-table td:last-child{border-right:0}.data-table a{color:var(--green);font-weight:750;text-decoration:none}.data-table a:hover{text-decoration:underline}
 @media(max-width:1080px){.device-scene{right:-4%;opacity:.58}.hero-content{max-width:72%}.score-card{flex-direction:column;text-align:center}.score-copy{display:flex;flex-direction:column;align-items:center}.kpi-grid{grid-template-columns:1fr}.kpi{min-height:112px}.method-flow{grid-template-columns:1fr}.flow-arrow{transform:rotate(90deg);text-align:center}}
 @media(min-width:761px){[data-testid="stHorizontalBlock"]:has(.top-brand){margin-top:1.65rem}}
@@ -154,19 +170,43 @@ def load_data():
     )
     metadata = json.loads((ROOT / "data" / "source_metadata.json").read_text())
     grid = pd.read_csv(ROOT / "data" / "grid_intensity.csv")
-    repairs = pd.read_csv(ROOT / "data" / "repair_profiles.csv")
-    metrics = json.loads((ROOT / "models" / "metrics.json").read_text())
-    return catalog, metadata, grid, repairs, metrics
+    required_catalog = {
+        "product_id", "entity_key", "manufacturer", "name", "model_number", "category",
+        "source_name", "source_url", "is_primary_record", "data_quality", "freshness_status",
+    }
+    missing_catalog = required_catalog.difference(catalog.columns)
+    if catalog.empty or missing_catalog or catalog["product_id"].isna().any() or not catalog["product_id"].astype(str).is_unique:
+        raise ValueError(f"catalogue runtime contract failed; missing={sorted(missing_catalog)}")
+    if not isinstance(metadata, dict) or not all(metadata.get(key) for key in ("snapshot_id", "snapshot_date")) or not isinstance(metadata.get("sources"), list):
+        raise ValueError("source metadata runtime contract failed")
+    required_grid = {"region", "year", "kg_co2e_per_kwh", "source_retrieved_at"}
+    if grid.empty or required_grid.difference(grid.columns):
+        raise ValueError("electricity-grid runtime contract failed")
+    grid["kg_co2e_per_kwh"] = pd.to_numeric(grid["kg_co2e_per_kwh"], errors="coerce")
+    if grid["region"].isna().any() or not grid["kg_co2e_per_kwh"].between(0, 2, inclusive="both").all():
+        raise ValueError("electricity-grid values are incomplete or out of range")
+    try:
+        metrics = json.loads((ROOT / "models" / "metrics.json").read_text())
+        if not isinstance(metrics, dict):
+            metrics = {}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        metrics = {}
+    return catalog, metadata, grid, metrics
 
 
 @st.cache_resource(show_spinner=False)
 def load_model():
     path = ROOT / "models" / "gadget_impact_pipeline.joblib"
-    return joblib.load(path) if path.exists() else None
+    return load_model_artifact(path)
 
 
-catalog, metadata, grid_data, repair_profiles, model_metrics = load_data()
-model = load_model()
+try:
+    catalog, metadata, grid_data, model_metrics = load_data()
+except (OSError, UnicodeError, ValueError, KeyError, pd.errors.ParserError):
+    st.error("Luma could not load its verified data snapshot. The assessment is paused so incomplete data is never presented as current evidence.")
+    st.caption("Rebuild or restore the files in data/, then restart the app. No partial score has been shown.")
+    st.stop()
+model, model_artifact_status = load_model()
 
 
 def _bool(value) -> bool:
@@ -250,6 +290,46 @@ def render_data_table(
     st.markdown(markup, unsafe_allow_html=True)
 
 
+def render_altair_chart(chart: alt.Chart) -> None:
+    """Render an Altair chart without Streamlit's hashed dataset update path.
+
+    Streamlit 1.50 extracts Altair data into content-hashed named datasets.
+    When a scenario control reruns quickly, the frontend can try to patch the
+    previous Vega view with the new dataset name and emit an "Unrecognized
+    data set" error. Keeping values inline inside child layers makes each
+    chart revision self-contained and avoids that race.
+    """
+    spec = chart.to_dict()
+    datasets = spec.pop("datasets", {})
+    spec.pop("$schema", None)
+
+    def inline_named_data(node) -> None:
+        if isinstance(node, dict):
+            data = node.get("data")
+            if isinstance(data, dict) and data.get("name") in datasets:
+                node["data"] = {"values": copy.deepcopy(datasets[data["name"]])}
+            for value in node.values():
+                inline_named_data(value)
+        elif isinstance(node, list):
+            for value in node:
+                inline_named_data(value)
+
+    inline_named_data(spec)
+    root_data = spec.pop("data", None)
+    if root_data is not None:
+        if "layer" in spec:
+            for layer in spec["layer"]:
+                layer.setdefault("data", copy.deepcopy(root_data))
+        else:
+            child = {"data": root_data}
+            for key in ("mark", "encoding", "transform"):
+                if key in spec:
+                    child[key] = spec.pop(key)
+            spec["layer"] = [child]
+
+    st.vega_lite_chart(spec, width="stretch", theme=None)
+
+
 def product_values(row: pd.Series) -> dict:
     values = row.to_dict()
     defaults = feature_defaults(values["category"])
@@ -275,15 +355,12 @@ def product_values(row: pd.Series) -> dict:
 
 
 def assess(values: dict):
-    prediction, error = None, None
-    if model is not None:
-        model_features = getattr(model, "features", FEATURES)
-        frame = pd.DataFrame([{feature: values.get(feature) for feature in model_features}])
-        if hasattr(model, "predict_with_uncertainty"):
-            predictions, errors = model.predict_with_uncertainty(frame)
-            prediction, error = float(predictions[0]), float(errors[0])
-        else:
-            prediction = float(model.predict(frame)[0])
+    values["model_point_estimate_enabled"] = bool(model_metrics.get("validation", {}).get("validated_for_real_lca", False))
+    model_features = getattr(model, "features", FEATURES) if model is not None else FEATURES
+    frame = pd.DataFrame([{feature: values.get(feature) for feature in model_features}])
+    prediction, error, applicability, diagnostic_status = predict_model_diagnostics(model, frame)
+    values["_model_diagnostic_status"] = diagnostic_status
+    values["_model_applicability"] = applicability
     return calculate_assessment(values, prediction, error)
 
 
@@ -297,10 +374,12 @@ def provenance(values: dict) -> list[tuple[str, str]]:
         ("Product identity", "Observed" if values.get("catalog_product") else "Inferred" if values.get("identity_confidence") in {"High", "Moderate"} else "Scenario"),
         ("Energy", evidence_state("energy", bool(values.get("observed_energy")))),
         ("Repairability", evidence_state("repairability", bool(values.get("observed_repairability")))),
-        ("Lifecycle carbon", "Observed" if values.get("observed_carbon") else "Estimated"),
+        ("Lifecycle carbon", evidence_state("carbon", bool(values.get("observed_carbon")))),
         ("Battery", evidence_state("battery", bool(values.get("observed_battery")))),
-        ("Durability", "Observed" if values.get("observed_durability") else "Estimated"),
-        ("Materials & transport", "Scenario"),
+        ("Durability", evidence_state("durability", bool(values.get("observed_durability")))),
+        ("Materials", evidence_state("materials", False)),
+        ("Circularity", evidence_state("circularity", False)),
+        ("Transport", evidence_state("transport", False)),
     ]
 
 
@@ -319,6 +398,248 @@ def _mark_override(values: dict, axis: str, *, invalidated_observation: bool = F
         invalidated = {str(item) for item in values.get("invalidated_observed_axes", [])}
         invalidated.add(axis)
         values["invalidated_observed_axes"] = sorted(invalidated)
+
+
+def _invalidate_reported_carbon(values: dict) -> None:
+    """Switch a sourced total to a modeled lifecycle when its drivers change."""
+    if values.get("observed_carbon"):
+        values["reported_lifecycle_kg"] = None
+        values["observed_carbon"] = False
+        _mark_override(values, "carbon", invalidated_observation=True)
+
+
+def _portable_value(value):
+    """Convert pandas/numpy scalars to bounded scenario-contract primitives."""
+    if value is None or _missing(value):
+        return None
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _scenario_overrides(values: dict) -> dict:
+    axes = {str(item) for item in values.get("override_axes", [])}
+    axis_fields = {
+        "energy": {"active_power_w", "daily_hours", "annual_energy_kwh"},
+        "repairability": {"repairability"},
+        "battery": {"battery_wh", "replaceable_battery"},
+        "durability": {"lifespan_years"},
+        "materials": {"manufacturing_kg", "weight_kg"},
+        "circularity": {"recyclability_pct", "recycled_content_pct"},
+        "transport": {"transport_km"},
+        "grid": {"grid_kg_co2_per_kwh"},
+        "carbon": {"reported_lifecycle_kg"},
+    }
+    selected = set().union(*(axis_fields.get(axis, set()) for axis in axes)) if axes else set()
+    return {key: _portable_value(values.get(key)) for key in selected if key in ASSESSMENT_INPUT_FIELDS}
+
+
+def assessment_scenario(values: dict, region: str) -> Scenario:
+    inputs = {
+        key: _portable_value(values.get(key))
+        for key in ASSESSMENT_INPUT_FIELDS
+        if key in values
+    }
+    # These identity fields are non-null in the portable contract.
+    inputs.update(
+        {
+            "name": str(values.get("name") or "Unlisted gadget"),
+            "manufacturer": str(values.get("manufacturer") or "Unknown"),
+            "category": str(values.get("category") or "Other"),
+        }
+    )
+    return Scenario.create(
+        inputs=inputs,
+        overrides=_scenario_overrides(values),
+        product_id=str(values.get("product_id") or "") or None,
+        region=region,
+        theme=THEME,
+        source_snapshot=str(metadata.get("snapshot_id") or "unknown"),
+        model_version=str(model_metrics.get("model_version") or "unknown"),
+        scoring_version=SCORING_VERSION,
+    )
+
+
+def _override_axes_from_fields(fields: set[str]) -> set[str]:
+    axes: set[str] = set()
+    if fields & {"active_power_w", "daily_hours", "annual_energy_kwh"}:
+        axes.add("energy")
+    if "repairability" in fields:
+        axes.add("repairability")
+    if fields & {"battery_wh", "replaceable_battery"}:
+        axes.add("battery")
+    if "lifespan_years" in fields:
+        axes.add("durability")
+    if fields & {"manufacturing_kg", "weight_kg"}:
+        axes.add("materials")
+    if fields & {"recyclability_pct", "recycled_content_pct"}:
+        axes.add("circularity")
+    if "transport_km" in fields:
+        axes.add("transport")
+    if "grid_kg_co2_per_kwh" in fields:
+        axes.add("grid")
+    if "reported_lifecycle_kg" in fields:
+        axes.add("carbon")
+    return axes
+
+
+def _override_axes_from_scenario(scenario: Scenario) -> set[str]:
+    return _override_axes_from_fields(set(scenario.overrides))
+
+
+def _apply_scenario(values: dict, scenario: Scenario) -> dict:
+    restored = values.copy()
+    catalog_backed = bool(restored.get("catalog_product"))
+    changed_fields = set(scenario.overrides)
+    if catalog_backed:
+        # A scenario token is an untrusted user artifact. Once product_id has
+        # resolved a current catalogue row, only user context and fields that
+        # were explicitly overridden may be restored. Saved fallback values
+        # must never masquerade as current source observations.
+        scenario_payload = scenario.catalog_payload()
+        annual_energy_is_authoritative = bool(restored.get("observed_energy")) and not _missing(restored.get("annual_energy_kwh"))
+        for field, value in scenario_payload.items():
+            if field == "grid_kg_co2_per_kwh" and field not in scenario.overrides:
+                # The region/factor pair is always declared scenario context,
+                # never a catalogue observation that needs invalidation.
+                continue
+            if field in {"active_power_w", "daily_hours"} and annual_energy_is_authoritative and "annual_energy_kwh" not in scenario.overrides:
+                # These controls are dormant while published annual energy is in use.
+                continue
+            if _changed(restored.get(field), value):
+                changed_fields.add(field)
+        restored.update(scenario_payload)
+    else:
+        restored.update(scenario.fallback_payload())
+        if scenario.product_id:
+            restored["retired_product_id"] = scenario.product_id
+    axes = _override_axes_from_fields(changed_fields)
+    restored["override_axes"] = sorted(axes)
+    restored["invalidated_observed_axes"] = sorted(axes & {"energy", "repairability", "battery", "durability", "carbon"})
+    if "energy" in axes:
+        restored["observed_energy"] = False
+        if changed_fields & {"active_power_w", "daily_hours"} and "annual_energy_kwh" not in changed_fields:
+            restored["annual_energy_kwh"] = None
+    if "repairability" in axes:
+        restored["observed_repairability"] = False
+    if "battery" in axes:
+        restored["observed_battery"] = False
+    if "durability" in axes:
+        restored["observed_durability"] = False
+    if axes & {"energy", "durability", "materials", "transport"}:
+        restored["reported_lifecycle_kg"] = None
+        restored["observed_carbon"] = False
+        restored["invalidated_observed_axes"] = sorted({*restored["invalidated_observed_axes"], "carbon"})
+    elif "carbon" in axes:
+        restored["observed_carbon"] = False
+    restored["_scenario_version"] = str(scenario.schema_version)
+    restored["_source_snapshot"] = scenario.source_snapshot
+    restored["_model_version"] = scenario.model_version
+    restored["_scoring_version"] = scenario.scoring_version
+    return restored
+
+
+def _seed_assessment_controls(values: dict, scenario: Scenario | None = None) -> None:
+    identity = str(values.get("product_id") or f"custom:{values.get('manufacturer')}:{values.get('name')}:{values.get('category')}")
+    marker = f"scenario:{scenario_token}" if scenario is not None else identity
+    if st.session_state.get("_assessment_control_seed") == marker:
+        return
+    # ``values`` already contains the trust-aware scenario overlay. Reading the
+    # raw scenario again here would let stale saved catalogue observations leak
+    # into widgets and become new user overrides on the next rerun.
+    payload = values
+    widget_fields = {
+        "analysis_daily_hours": "daily_hours",
+        "analysis_lifespan_years": "lifespan_years",
+        "analysis_manufacturing_kg": "manufacturing_kg",
+        "analysis_active_power_w": "active_power_w",
+        "analysis_repairability": "repairability",
+        "analysis_recyclability_pct": "recyclability_pct",
+        "analysis_recycled_content_pct": "recycled_content_pct",
+        "analysis_battery_wh": "battery_wh",
+        "analysis_replaceable_battery": "replaceable_battery",
+        "analysis_weight_kg": "weight_kg",
+        "analysis_transport_km": "transport_km",
+    }
+    for widget_key, field in widget_fields.items():
+        if field in payload and payload[field] is not None:
+            st.session_state[widget_key] = payload[field]
+    if scenario is not None:
+        available_regions = set(grid_data["region"].dropna().astype(str))
+        st.session_state.analysis_region = scenario.region if scenario.region in available_regions | {"Custom intensity"} else "Custom intensity"
+    st.session_state.analysis_use_published = bool(payload.get("annual_energy_kwh") is not None and values.get("observed_energy"))
+    if scenario is not None and st.session_state.get("analysis_region") == "Custom intensity":
+        st.session_state.analysis_custom_grid_g = float(payload.get("grid_kg_co2_per_kwh", 0.42) or 0.42) * 1000
+    st.session_state._assessment_control_seed = marker
+
+
+def _latest_grid_row(grid: pd.DataFrame, region: str) -> pd.Series:
+    """Return one reproducible latest grid record for ``region``.
+
+    Some regions have records from more than one source or refresh. Year and
+    retrieval time define recency; the remaining fields are deterministic
+    tie-breakers so a shuffled input frame cannot silently change a scenario.
+    """
+    candidates = grid[grid["region"].astype(str).eq(str(region))].copy()
+    if candidates.empty:
+        raise ValueError(f"No electricity-grid record is available for {region!r}")
+    candidates["_grid_year"] = pd.to_numeric(candidates.get("year"), errors="coerce")
+    candidates["_grid_retrieved"] = pd.to_datetime(candidates.get("source_retrieved_at"), errors="coerce", utc=True)
+    candidates["_grid_factor"] = pd.to_numeric(candidates.get("kg_co2e_per_kwh"), errors="coerce")
+    tie_breakers = [column for column in ("source_name", "source_url", "code") if column in candidates]
+    ordered = candidates.sort_values(
+        ["_grid_year", "_grid_retrieved", *tie_breakers, "_grid_factor"],
+        kind="mergesort",
+        na_position="first",
+    )
+    return ordered.iloc[-1].drop(labels=["_grid_year", "_grid_retrieved", "_grid_factor"])
+
+
+def _comparison_scenario_values(
+    row: pd.Series,
+    *,
+    grid_factor: float,
+    daily_hours: float,
+    ownership_years: float,
+) -> dict:
+    """Apply one comparable use case to a catalogue row.
+
+    Published energy and lifecycle totals often encode different use profiles,
+    regions, and study periods. The comparison view therefore retains the
+    sourced device attributes but recalculates those totals under the declared
+    shared scenario.
+    """
+    values = product_values(row)
+    energy_was_observed = bool(values.get("observed_energy"))
+    durability_was_observed = bool(values.get("observed_durability"))
+    carbon_was_observed = bool(values.get("observed_carbon"))
+    values["grid_kg_co2_per_kwh"] = float(grid_factor)
+    values["daily_hours"] = float(daily_hours)
+    values["lifespan_years"] = float(ownership_years)
+    values["annual_energy_kwh"] = None
+    values["reported_lifecycle_kg"] = None
+    values["observed_energy"] = False
+    values["observed_durability"] = False
+    values["observed_carbon"] = False
+    _mark_override(values, "energy", invalidated_observation=energy_was_observed)
+    _mark_override(values, "durability", invalidated_observation=durability_was_observed)
+    _mark_override(values, "carbon", invalidated_observation=carbon_was_observed)
+    _mark_override(values, "grid")
+    return values
+
+
+def _overlapping_score_pairs(records: list[dict]) -> list[tuple[str, str]]:
+    """Return products whose inclusive likely-score intervals overlap."""
+    overlaps: list[tuple[str, str]] = []
+    for index, left in enumerate(records):
+        for right in records[index + 1 :]:
+            if max(float(left["Likely low"]), float(right["Likely low"])) <= min(
+                float(left["Likely high"]), float(right["Likely high"])
+            ):
+                overlaps.append((str(left["Product"]), str(right["Product"])))
+    return overlaps
 
 
 def factor_chart(result) -> alt.Chart:
@@ -414,8 +735,12 @@ def best_peers(values: dict, limit: int = 3) -> list[tuple[dict, object]]:
         candidates = pool[pool["observed_energy"].map(_bool)].sort_values("active_power_w").head(12)
     ranked = []
     for _, row in candidates.iterrows():
-        peer_values = product_values(row)
-        peer_values["grid_kg_co2_per_kwh"] = values["grid_kg_co2_per_kwh"]
+        peer_values = _comparison_scenario_values(
+            row,
+            grid_factor=float(values["grid_kg_co2_per_kwh"]),
+            daily_hours=float(values["daily_hours"]),
+            ownership_years=float(values["lifespan_years"]),
+        )
         peer_result = assess(peer_values)
         ranked.append((peer_values, peer_result))
     return sorted(ranked, key=lambda item: item[1].eco_score, reverse=True)[:limit]
@@ -429,6 +754,18 @@ with theme_column:
     st.toggle("Dark mode", value=DARK, key="theme_control", on_change=_apply_theme_change)
 if _query_value("theme") != THEME:
     st.query_params["theme"] = THEME
+if linked_scenario_error:
+    st.error(f"This assessment link could not be opened safely: {linked_scenario_error}")
+elif linked_scenario is not None:
+    st.success(f"Reopened scenario v{linked_scenario.schema_version} · data snapshot {linked_scenario.source_snapshot} · model {linked_scenario.model_version}")
+    if linked_scenario.source_snapshot != str(metadata.get("snapshot_id")):
+        st.warning("This scenario was created with a different data snapshot. Its saved assumptions are preserved, but current source records may have changed.")
+    if linked_scenario.model_version != str(model_metrics.get("model_version")) or linked_scenario.scoring_version != SCORING_VERSION:
+        st.warning("This scenario uses an older model or scoring version. The saved inputs remain visible; download the JSON record for an exact audit trail.")
+if model_artifact_status != "ready":
+    st.warning("Neural shadow diagnostics are temporarily unavailable. The transparent lifecycle ledger remains active; no neural point-score influence is being claimed.")
+elif not model_metrics:
+    st.warning("Model governance metadata is unavailable. The neural artifact is restricted to diagnostics and the transparent ledger remains the scoring authority.")
 
 
 category_count = catalog["category"].nunique()
@@ -439,7 +776,7 @@ hero_markup = f"""
       <div class="hero-content">
         <div class="eyebrow">Evidence-first gadget intelligence</div>
         <h1>See the impact behind every device.</h1>
-        <p>Search real product records, personalise how a gadget is used, and understand the evidence and uncertainty behind every AI-assisted score.</p>
+        <p>Search real product records, personalise how a gadget is used, and understand the evidence and uncertainty behind every explainable score.</p>
         <div class="badges"><span class="badge">Global device search</span><span class="badge">Regulatory data</span><span class="badge">Category-aware neural models</span><span class="badge">Any-device estimates</span><span class="badge">Explainable uncertainty</span></div>
         <div class="statbar">
           <div class="stat"><b>{len(catalog):,}</b><span>catalog records</span></div>
@@ -460,7 +797,15 @@ hero_markup = f"""
 
 
 tab_labels = ["Explore data", "Analyse a gadget", "Compare", "Saved & reports", "AI & data quality"]
-default_tab = "Analyse a gadget" if _query_value("tab") == "analyse" else "Explore data"
+default_tab = {
+    "explore": "Explore data",
+    "analyse": "Analyse a gadget",
+    "analyze": "Analyse a gadget",
+    "compare": "Compare",
+    "saved": "Saved & reports",
+    "quality": "AI & data quality",
+    "ai": "AI & data quality",
+}.get(_query_value("tab").strip().lower(), "Explore data")
 explore, analyse, compare, saved, intelligence = st.tabs(tab_labels, default=default_tab)
 
 
@@ -492,7 +837,7 @@ with explore:
     if len(browse) > CATALOG_PREVIEW_LIMIT:
         st.caption(f"Showing the first {CATALOG_PREVIEW_LIMIT:,} matches. Refine the search or download the full filtered result set.")
     export_columns = [column for column in browse.columns if not column.startswith("_search") and column != "search_aliases"]
-    st.download_button("Download filtered records", browse[export_columns].to_csv(index=False).encode(), "luma-gadget-data-filtered.csv", "text/csv")
+    st.download_button("Download filtered records", csv_bytes(browse[export_columns]), "luma-gadget-data-filtered.csv", "text/csv")
 
 
 with analyse:
@@ -500,22 +845,39 @@ with analyse:
     values = None
     with controls:
         st.subheader("Build an assessment")
-        linked_product = _query_value("product")
-        linked_region_query = _query_value("region")
+        linked_product = linked_scenario.product_id if linked_scenario is not None and linked_scenario.product_id else _query_value("product")
         linked_row = catalog[catalog["product_id"].astype(str).eq(linked_product)] if linked_product else pd.DataFrame()
+        linked_product_missing = bool(linked_scenario is not None and linked_product and linked_row.empty)
+        available_region_names = set(grid_data["region"].dropna().astype(str)) | {"Custom intensity"}
+        requested_linked_region = linked_scenario.region if linked_scenario is not None else _query_value("region")
+        linked_region_query = requested_linked_region if requested_linked_region in available_region_names else "Custom intensity"
         if linked_product and st.session_state.get("_linked_product_seen") != linked_product:
             st.session_state._linked_product_seen = linked_product
-            st.session_state.analysis_input_mode = "Search catalogue"
             if len(linked_row):
+                st.session_state.analysis_input_mode = "Search catalogue"
                 st.session_state.analysis_search = str(linked_row.iloc[0]["model_number"])
+            elif linked_scenario is not None:
+                st.session_state.analysis_input_mode = "Any device estimate"
+                st.session_state.unlisted_device_name = str(linked_scenario.inputs.get("name") or "Unlisted gadget")
+                st.session_state.unlisted_manufacturer = str(linked_scenario.inputs.get("manufacturer") or "Unknown")
+                st.session_state.unlisted_category = str(linked_scenario.inputs.get("category") or "Other")
+                st.session_state._identity_seed = st.session_state.unlisted_device_name
             st.session_state.analysis_categories = []
             st.session_state.analysis_brands = []
         elif not linked_product:
             st.session_state._linked_product_seen = ""
-        available_region_names = set(grid_data["region"].dropna().astype(str)) | {"Custom intensity"}
+        if linked_scenario is not None and not linked_scenario.product_id and st.session_state.get("_linked_custom_scenario_seen") != scenario_token:
+            st.session_state._linked_custom_scenario_seen = scenario_token
+            st.session_state.analysis_input_mode = "Any device estimate"
+            st.session_state.unlisted_device_name = str(linked_scenario.inputs.get("name") or "Unlisted gadget")
+            st.session_state.unlisted_manufacturer = str(linked_scenario.inputs.get("manufacturer") or "Unknown")
+            st.session_state.unlisted_category = str(linked_scenario.inputs.get("category") or "Other")
+            st.session_state._identity_seed = st.session_state.unlisted_device_name
         if linked_region_query in available_region_names and st.session_state.get("_linked_region_seen") != linked_region_query:
             st.session_state._linked_region_seen = linked_region_query
             st.session_state.pop("analysis_region", None)
+        if linked_product_missing:
+            st.warning("This scenario's original catalog record is not in the current snapshot. Luma restored its portable inputs as an explicit estimate instead.")
         mode = st.radio(
             "Input",
             ["Search catalogue", "Any device estimate"],
@@ -641,65 +1003,137 @@ with analyse:
                 st.info("Type any device name. The app will suggest a manufacturer and category, then expose every assumption.")
 
         if values is not None:
+            if linked_scenario is not None:
+                values = _apply_scenario(values, linked_scenario)
             values.setdefault("override_axes", [])
             values.setdefault("invalidated_observed_axes", [])
+            _seed_assessment_controls(values, linked_scenario)
             st.markdown("#### Your context")
             regions = sorted(grid_data["region"].dropna().unique().tolist())
-            linked_region = _query_value("region", "India")
+            linked_region = linked_scenario.region if linked_scenario is not None else _query_value("region", "India")
             region_index = regions.index(linked_region) if linked_region in regions else regions.index("India") if "India" in regions else 0
-            region = st.selectbox("Electricity region", regions + ["Custom intensity"], index=region_index, key="analysis_region")
+            if "analysis_region" in st.session_state:
+                region = st.selectbox("Electricity region", regions + ["Custom intensity"], key="analysis_region")
+            else:
+                region = st.selectbox("Electricity region", regions + ["Custom intensity"], index=region_index, key="analysis_region")
             if region == "Custom intensity":
-                grid_factor = st.number_input("Grid intensity (g CO₂e / kWh)", 0.0, 2000.0, 420.0, 1.0) / 1000
+                if "analysis_custom_grid_g" not in st.session_state:
+                    st.session_state.analysis_custom_grid_g = 420.0
+                grid_factor = st.number_input(
+                    "Grid intensity (g CO₂e / kWh)",
+                    min_value=0.0,
+                    max_value=2000.0,
+                    step=1.0,
+                    key="analysis_custom_grid_g",
+                ) / 1000
                 grid_year = "custom"
             else:
-                region_row = grid_data[grid_data["region"].eq(region)].sort_values("year").iloc[-1]
+                region_row = _latest_grid_row(grid_data, region)
                 grid_factor = float(region_row["kg_co2e_per_kwh"])
                 grid_year = int(region_row["year"])
             values["grid_kg_co2_per_kwh"] = grid_factor
+            values["grid_region"] = region
+            values["grid_year"] = grid_year
             st.caption(f"{grid_factor * 1000:,.0f} g CO₂e/kWh · {grid_year} electricity data")
-            values["daily_hours"] = st.slider("Daily active use", 0.5, 24.0, float(values.get("daily_hours", 5.0)), 0.5)
-            values["lifespan_years"] = st.slider("Expected ownership", 1.0, 18.0, float(values["lifespan_years"]), 0.1)
+            original_daily_hours = values["daily_hours"]
+            energy_was_observed = bool(values.get("observed_energy"))
+            values["daily_hours"] = st.slider(
+                "Daily active use", min_value=0.0, max_value=24.0, step=0.5, key="analysis_daily_hours"
+            )
+            if _changed(original_daily_hours, values["daily_hours"]) and not (values.get("observed_energy") and not _missing(values.get("annual_energy_kwh"))):
+                _mark_override(values, "energy", invalidated_observation=energy_was_observed)
+                _invalidate_reported_carbon(values)
+            original_lifespan = values["lifespan_years"]
+            durability_was_observed = bool(values.get("observed_durability"))
+            values["lifespan_years"] = st.slider(
+                "Expected ownership", min_value=0.5, max_value=30.0, step=0.1, key="analysis_lifespan_years"
+            )
+            if _changed(original_lifespan, values["lifespan_years"]) and values.get("catalog_product"):
+                values["observed_durability"] = False
+                _mark_override(values, "durability", invalidated_observation=durability_was_observed)
+                _invalidate_reported_carbon(values)
             if values.get("observed_energy") and not _missing(values.get("annual_energy_kwh")):
-                use_certified = st.toggle("Use published annual energy", value=True, help="Turn off to calculate energy from active power and your daily-use setting.")
+                use_certified = st.toggle("Use published annual energy", key="analysis_use_published", help="Turn off to calculate energy from active power and your daily-use setting.")
                 if not use_certified:
                     values["annual_energy_kwh"] = None
                     values["observed_energy"] = False
                     _mark_override(values, "energy", invalidated_observation=True)
+                    _invalidate_reported_carbon(values)
             with st.expander("Advanced lifecycle assumptions"):
                 st.caption("Changing a sourced field creates a scenario override; the original source remains linked below.")
-                values["manufacturing_kg"] = st.number_input("Manufacturing carbon (kg CO₂e)", 0.0, 5000.0, float(values["manufacturing_kg"]))
+                original_manufacturing = values["manufacturing_kg"]
+                values["manufacturing_kg"] = st.number_input(
+                    "Manufacturing carbon (kg CO₂e)", min_value=0.0, max_value=5000.0, key="analysis_manufacturing_kg"
+                )
+                if _changed(original_manufacturing, values["manufacturing_kg"]):
+                    _mark_override(values, "materials")
+                    _invalidate_reported_carbon(values)
                 original_power = values["active_power_w"]
                 power_was_observed = bool(values.get("observed_energy"))
-                values["active_power_w"] = st.number_input("Active power (W)", 0.01, 5000.0, float(original_power))
+                values["active_power_w"] = st.number_input(
+                    "Active power (W)", min_value=0.0, max_value=10000.0, key="analysis_active_power_w"
+                )
                 if _changed(original_power, values["active_power_w"]) and values.get("catalog_product"):
                     values["annual_energy_kwh"] = None
                     values["observed_energy"] = False
                     _mark_override(values, "energy", invalidated_observation=power_was_observed)
+                    _invalidate_reported_carbon(values)
                 original_repairability = values["repairability"]
                 repairability_was_observed = bool(values.get("observed_repairability"))
-                values["repairability"] = st.slider("Repairability", 0.0, 10.0, float(original_repairability), 0.1)
+                values["repairability"] = st.slider(
+                    "Repairability", min_value=0.0, max_value=10.0, step=0.1, key="analysis_repairability"
+                )
                 if _changed(original_repairability, values["repairability"]) and values.get("catalog_product"):
                     values["observed_repairability"] = False
                     _mark_override(values, "repairability", invalidated_observation=repairability_was_observed)
-                values["recyclability_pct"] = st.slider("Recyclability (%)", 0.0, 100.0, float(values["recyclability_pct"]), 1.0)
-                values["recycled_content_pct"] = st.slider("Recycled content (%)", 0.0, 100.0, float(values["recycled_content_pct"]), 1.0)
+                original_recyclability = values["recyclability_pct"]
+                values["recyclability_pct"] = st.slider(
+                    "Recyclability (%)", min_value=0.0, max_value=100.0, step=1.0, key="analysis_recyclability_pct"
+                )
+                original_recycled_content = values["recycled_content_pct"]
+                values["recycled_content_pct"] = st.slider(
+                    "Recycled content (%)", min_value=0.0, max_value=100.0, step=1.0, key="analysis_recycled_content_pct"
+                )
+                if _changed(original_recyclability, values["recyclability_pct"]) or _changed(original_recycled_content, values["recycled_content_pct"]):
+                    _mark_override(values, "circularity")
                 original_battery = values["battery_wh"]
                 original_replaceable = bool(values["replaceable_battery"])
                 battery_was_observed = bool(values.get("observed_battery"))
-                values["battery_wh"] = st.number_input("Battery capacity (Wh)", 0.0, 2000.0, float(original_battery))
-                values["replaceable_battery"] = st.checkbox("User-replaceable battery", original_replaceable)
+                values["battery_wh"] = st.number_input(
+                    "Battery capacity (Wh)", min_value=0.0, max_value=10000.0, key="analysis_battery_wh"
+                )
+                values["replaceable_battery"] = st.checkbox("User-replaceable battery", key="analysis_replaceable_battery")
                 if (_changed(original_battery, values["battery_wh"]) or original_replaceable != values["replaceable_battery"]) and values.get("catalog_product"):
                     values["observed_battery"] = False
                     _mark_override(values, "battery", invalidated_observation=battery_was_observed)
-                values["weight_kg"] = st.number_input("Weight (kg)", 0.01, 500.0, float(values["weight_kg"]))
-                values["transport_km"] = st.number_input("Transport distance (km)", 0.0, 50000.0, float(values["transport_km"]))
+                original_weight = values["weight_kg"]
+                values["weight_kg"] = st.number_input(
+                    "Weight (kg)", min_value=0.0, max_value=500.0, key="analysis_weight_kg"
+                )
+                if _changed(original_weight, values["weight_kg"]):
+                    _mark_override(values, "materials")
+                    _invalidate_reported_carbon(values)
+                original_transport = values["transport_km"]
+                values["transport_km"] = st.number_input(
+                    "Transport distance (km)", min_value=0.0, max_value=50000.0, key="analysis_transport_km"
+                )
+                if _changed(original_transport, values["transport_km"]):
+                    _mark_override(values, "transport")
+                    _invalidate_reported_carbon(values)
 
     if values is None:
         with dashboard:
             st.info("Choose a matching product to build the dashboard.")
     else:
         result = assess(values)
+        current_scenario = assessment_scenario(values, region)
+        values["_scenario_version"] = str(current_scenario.schema_version)
+        values["_source_snapshot"] = current_scenario.source_snapshot
+        values["_model_version"] = current_scenario.model_version
+        values["_scoring_version"] = current_scenario.scoring_version
         with dashboard:
+            if values.get("_model_diagnostic_status") == "prediction_failed":
+                st.warning("The neural diagnostic could not evaluate this input. This result uses the transparent lifecycle ledger and its evidence-based uncertainty only.")
             product_evidence = has_product_environmental_evidence(values)
             if values.get("catalog_product") and product_evidence:
                 st.markdown(
@@ -744,9 +1178,9 @@ with analyse:
                     unsafe_allow_html=True,
                 )
             narrative = explanation(values, result)
-            st.markdown(f'<div class="callout"><b>AI-assisted explanation</b><br>{html.escape(narrative)}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="callout"><b>Explainable model summary</b><br>{html.escape(narrative)}</div>', unsafe_allow_html=True)
             st.markdown("### Lifecycle pressure")
-            st.altair_chart(factor_chart(result), use_container_width=True, theme=None)
+            render_altair_chart(factor_chart(result))
             evidence_column, choices_column = st.columns([1.05, 1], gap="large")
             with evidence_column:
                 st.markdown("### Evidence coverage")
@@ -764,12 +1198,38 @@ with analyse:
                     st.write(f"✓ {tip}")
                 peers = best_peers(values) if product_evidence else []
                 if peers:
-                    st.caption("Higher modeled peers, prioritising the strongest comparable source field")
+                    st.caption("Higher modeled peers under the same region, daily use and ownership, prioritising the strongest comparable source field")
                     for peer_values, peer_result in peers:
                         st.markdown(f"**{peer_values['manufacturer']} {peer_values['name']}** · score {peer_result.eco_score:.0f} · {peer_values['source_name']}")
 
-            action_1, action_2, action_3 = st.columns([0.8, 1.05, 1.25])
+            with st.expander("Field-level evidence and assumptions", expanded=True):
+                st.caption("Every influential input is labelled as observed, calculated, estimated, a regional scenario, or a user override.")
+                ledger_frame = pd.DataFrame([entry.to_dict() for entry in evidence_ledger(values, result.annual_energy)]).rename(
+                    columns={"factor": "Input", "value": "Value", "status": "Status", "source": "Source", "date": "Date", "improvement": "What would improve it"}
+                )
+                render_data_table(ledger_frame, height=430, min_width=1120, aria_label="Assessment evidence and assumptions")
+
+            st.markdown("### Keep, repair or replace?")
+            keep_carbon = annual_use_carbon(values, result)
+            repair_footprint = estimated_repair_footprint(values)
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Keep one more year", f"{keep_carbon:,.1f} kg CO₂e", help="Use-phase carbon under the selected electricity scenario; maintenance is excluded.")
+            d2.metric("Repair + one year", f"{keep_carbon + repair_footprint:,.1f} kg CO₂e", help="Includes a disclosed repair estimate of 4–8% of manufacturing carbon, adjusted by repairability.")
+            if peers:
+                replacement_values, replacement_result = peers[0]
+                decision = replacement_decision(values, result, replacement_values, replacement_result)
+                d3.metric("Replacement upfront", f"{decision.replacement_upfront_kg:,.1f} kg CO₂e", help=f"Manufacturing and modeled freight for {replacement_values['manufacturer']} {replacement_values['name']}.")
+                d4.metric("Carbon payback", f"{decision.break_even_years:.1f} years" if decision.break_even_years is not None else "No payback", help="Years of modeled use-phase savings needed to recover new production and freight.")
+                st.info(f"**Candidate used for this decision:** {replacement_values['manufacturer']} {replacement_values['name']}. {decision.verdict}")
+            else:
+                d3.metric("Avoided new production", f"{max(0.0, float(values.get('manufacturing_kg', 0)) - repair_footprint):,.1f} kg CO₂e")
+                d4.metric("Repair estimate", f"{repair_footprint:,.1f} kg CO₂e")
+                st.caption("No sufficiently comparable source-backed replacement is available for a carbon-payback calculation. Keeping and repair values remain scenario estimates.")
+            st.caption("Decision figures are modeled scenarios, not repair quotations or product LCAs. Change region, use and ownership above to test the result.")
+
+            action_1, action_2, action_3, action_4 = st.columns([0.8, 1.05, 1.05, 1.15])
             current_saved = saved_record(values, result)
+            current_saved["scenario"] = current_scenario.to_dict()
             with action_1:
                 if st.button("Save to shortlist", type="primary", width="stretch"):
                     st.session_state.saved_gadgets = [item for item in st.session_state.saved_gadgets if item["id"] != current_saved["id"]] + [current_saved]
@@ -778,18 +1238,20 @@ with analyse:
                 pdf = assessment_pdf(values, result, narrative, tips)
                 st.download_button("Download impact report", pdf, f"luma-{_safe_name(values['name'])}.pdf", "application/pdf", width="stretch")
             with action_3:
-                shareable_product_id = str(values.get("product_id", "")).strip()
-                if shareable_product_id:
-                    share_query = f"?theme={THEME}&tab=analyse&product={quote(shareable_product_id)}&region={quote(region if 'region' in locals() else 'India')}"
-                    share_url = f"{st.context.url}{share_query}"
-                    st.link_button("Open share link ↗", share_url, width="stretch")
-                    st.caption("Keeps this catalogue gadget, region and theme.")
-                else:
-                    st.caption("Custom scenarios cannot be reopened from a link yet. Save or download this assessment instead.")
-            if shareable_product_id:
-                with st.expander("Copy a link to this assessment"):
-                    st.caption("Send this full URL to reopen the same catalogue assessment.")
-                    st.code(share_url, language=None, wrap_lines=True)
+                st.download_button(
+                    "Download scenario JSON",
+                    current_scenario.to_json().encode("utf-8"),
+                    f"luma-{_safe_name(values['name'])}-scenario.json",
+                    "application/json",
+                    width="stretch",
+                )
+            with action_4:
+                current_scenario_token = current_scenario.to_token()
+                share_url = f"{str(st.context.url).split('?', 1)[0]}?tab=analyse&scenario={current_scenario_token}"
+                st.link_button("Open complete share link ↗", share_url, width="stretch")
+            with st.expander("Copy or audit this assessment"):
+                st.caption("This link includes the device identity, context, overrides, data snapshot, model version and scoring version. It contains no secret or personal account data.")
+                st.code(share_url, language=None, wrap_lines=True)
 
 
 with compare:
@@ -807,46 +1269,178 @@ with compare:
         st.caption(f"{len(compare_all):,} candidates match; showing the top {len(compare_pool):,}. Add a model or manufacturer to refine the list.")
     compare_labels = [(product_label(row), index) for index, row in compare_pool.iterrows()]
     chosen = st.multiselect("Select 2–5 records", [item[0] for item in compare_labels], max_selections=5, key="compare_selected")
+
+    st.markdown("#### Shared comparison scenario")
+    comparison_regions = sorted(grid_data["region"].dropna().astype(str).unique().tolist())
+    default_comparison_region = "India" if "India" in comparison_regions else comparison_regions[0]
+    scenario_1, scenario_2, scenario_3 = st.columns(3)
+    with scenario_1:
+        comparison_region = st.selectbox(
+            "Shared electricity region",
+            comparison_regions,
+            index=comparison_regions.index(default_comparison_region),
+            key="compare_region",
+        )
+    with scenario_2:
+        comparison_daily_hours = st.slider(
+            "Shared daily active use",
+            0.5,
+            24.0,
+            5.0,
+            0.5,
+            key="compare_daily_hours",
+        )
+    with scenario_3:
+        comparison_ownership_years = st.slider(
+            "Shared expected ownership",
+            1.0,
+            18.0,
+            5.0,
+            0.5,
+            key="compare_ownership_years",
+        )
+    comparison_grid_row = _latest_grid_row(grid_data, comparison_region)
+    comparison_grid_factor = float(comparison_grid_row["kg_co2e_per_kwh"])
+    comparison_grid_year = int(comparison_grid_row["year"])
+    st.caption(
+        f"Applied to every selected device: {comparison_daily_hours:g} h/day for {comparison_ownership_years:g} years · "
+        f"{comparison_region} {comparison_grid_year} grid ({comparison_grid_factor * 1000:,.0f} g CO₂e/kWh). "
+        "Published annual-energy and lifecycle totals are recalculated for this comparison so the scenario is consistent."
+    )
+
     if len(chosen) >= 2:
         label_lookup = dict(compare_labels)
-        comparison_records, report_records = [], []
+        comparison_records, report_records, factor_records = [], [], []
         compared_categories: set[str] = set()
-        default_grid = float(grid_data[grid_data["region"].eq("India")]["kg_co2e_per_kwh"].iloc[-1]) if "India" in set(grid_data["region"]) else 0.42
         for label in chosen:
-            compared_values = product_values(catalog.loc[label_lookup[label]])
+            compared_values = _comparison_scenario_values(
+                catalog.loc[label_lookup[label]],
+                grid_factor=comparison_grid_factor,
+                daily_hours=comparison_daily_hours,
+                ownership_years=comparison_ownership_years,
+            )
             compared_categories.add(str(compared_values["category"]))
-            compared_values["grid_kg_co2_per_kwh"] = default_grid
             compared_result = assess(compared_values)
+            # Reuse the selectable identity label so similarly named records
+            # remain distinct throughout interval and factor calculations.
+            product_name = label
             comparison_records.append(
                 {
-                    "Product": f"{compared_values['manufacturer']} {compared_values['name']}", "Eco score": compared_result.eco_score,
+                    "Product": product_name, "Eco score": compared_result.eco_score,
                     "Likely low": compared_result.score_low, "Likely high": compared_result.score_high,
-                    "Lifecycle kg CO₂e": compared_result.lifecycle_carbon, "Annual energy kWh": compared_result.annual_energy,
+                    "Modeled lifecycle kg CO₂e": compared_result.lifecycle_carbon, "Annual energy kWh": compared_result.annual_energy,
                     "Repairability": compared_values["repairability"], "Confidence": compared_result.confidence, "Source": compared_values["source_name"],
                 }
             )
+            factor_records.extend(
+                {
+                    "Product": product_name,
+                    "Factor": factor,
+                    "Modeled burden": burden,
+                }
+                for factor, burden in compared_result.factors.items()
+            )
             report_records.append(saved_record(compared_values, compared_result))
+        overlapping_pairs = _overlapping_score_pairs(comparison_records)
+        overlapping_products = {product for pair in overlapping_pairs for product in pair}
+        for record in comparison_records:
+            record["Interval reading"] = "Inconclusive — overlaps" if record["Product"] in overlapping_products else "Separated interval"
         comparison = pd.DataFrame(comparison_records).set_index("Product").sort_values("Eco score", ascending=False)
         if len(compared_categories) > 1:
             st.warning("These devices serve different purposes. Compare the factor breakdowns, but do not treat the score order as a like-for-like buying recommendation.")
-        render_data_table(comparison.reset_index(), height=280, min_width=980, aria_label="Gadget comparison")
+
+        if overlapping_pairs:
+            displayed_pairs = "; ".join(f"{left} ↔ {right}" for left, right in overlapping_pairs[:3])
+            remaining_pairs = len(overlapping_pairs) - 3
+            suffix = f"; plus {remaining_pairs} more" if remaining_pairs > 0 else ""
+            st.warning(
+                f"Inconclusive score order: likely intervals overlap for {displayed_pairs}{suffix}. "
+                "Treat the point estimates as scenario signals, not a settled ranking."
+            )
+        else:
+            st.success("The displayed likely score intervals do not overlap under this scenario. The results are still modeled estimates, not measured product rankings.")
+
+        render_data_table(comparison.reset_index(), height=280, min_width=1160, aria_label="Gadget comparison")
         chart_data = comparison.reset_index()
-        compare_chart = (
+        product_order = chart_data["Product"].tolist()
+        score_intervals = (
             alt.Chart(chart_data)
-            .mark_bar(cornerRadiusEnd=7)
+            .mark_rule(strokeWidth=7, strokeCap="round", color=palette["amber"], opacity=0.72)
+            .encode(
+                x=alt.X("Likely low:Q", scale=alt.Scale(domain=[0, 100]), title="Eco score and likely interval"),
+                x2=alt.X2("Likely high:Q"),
+                y=alt.Y("Product:N", sort=product_order, title=None),
+                tooltip=["Product", "Eco score", "Likely low", "Likely high", "Interval reading", "Confidence"],
+            )
+        )
+        score_points = (
+            alt.Chart(chart_data)
+            .mark_point(filled=True, size=125, stroke=palette["card"], strokeWidth=2)
             .encode(
                 x=alt.X("Eco score:Q", scale=alt.Scale(domain=[0, 100])),
-                y=alt.Y("Product:N", sort="-x", title=None),
+                y=alt.Y("Product:N", sort=product_order, title=None),
                 color=alt.Color("Eco score:Q", scale=alt.Scale(domain=[0, 100], range=["#e1a84e", "#4cdd93"]), legend=None),
-                tooltip=["Product", "Eco score", "Confidence"],
+                tooltip=["Product", "Eco score", "Likely low", "Likely high", "Interval reading", "Confidence"],
             )
-            .properties(height=max(150, len(chart_data) * 46))
+        )
+        compare_chart = (
+            alt.layer(score_intervals, score_points)
+            .properties(height=max(150, len(chart_data) * 52))
             .configure(background=palette["card"])
             .configure_view(strokeWidth=0)
             .configure_axis(labelColor=palette["muted"], titleColor=palette["muted"], gridColor=palette["line"], domain=False)
         )
-        st.altair_chart(compare_chart, use_container_width=True, theme=None)
-        st.info(f"Highest modeled score here: **{comparison.index[0]}**. Overlapping score ranges mean the order is not conclusive.")
+        st.markdown("#### Likely score intervals")
+        st.caption("Dots are point estimates; horizontal bars are the likely score intervals. Overlap is labelled inconclusive.")
+        render_altair_chart(compare_chart)
+
+        reference_product = str(comparison.index[0])
+        factor_data = pd.DataFrame(factor_records)
+        reference_factors = (
+            factor_data[factor_data["Product"].eq(reference_product)]
+            .set_index("Factor")["Modeled burden"]
+            .to_dict()
+        )
+        factor_data["Δ vs highest point estimate"] = factor_data.apply(
+            lambda row: float(row["Modeled burden"]) - float(reference_factors[row["Factor"]]),
+            axis=1,
+        )
+        delta_extent = max(
+            1.0,
+            float(factor_data["Δ vs highest point estimate"].abs().max()),
+        )
+        factor_delta_chart = (
+            alt.Chart(factor_data)
+            .mark_bar(cornerRadiusEnd=4)
+            .encode(
+                x=alt.X(
+                    "Δ vs highest point estimate:Q",
+                    title="Modeled burden-point delta (lower is better)",
+                    stack=None,
+                    scale=alt.Scale(domain=[-delta_extent, delta_extent]),
+                ),
+                y=alt.Y("Factor:N", title=None, sort=list(reference_factors)),
+                yOffset=alt.YOffset("Product:N"),
+                color=alt.Color("Product:N", title="Device"),
+                tooltip=[
+                    "Product",
+                    "Factor",
+                    alt.Tooltip("Modeled burden:Q", format=".1f"),
+                    alt.Tooltip("Δ vs highest point estimate:Q", format="+.1f"),
+                ],
+            )
+            .properties(height=420)
+            .configure(background=palette["card"])
+            .configure_view(strokeWidth=0)
+            .configure_axis(labelColor=palette["muted"], titleColor=palette["muted"], gridColor=palette["line"], domain=False)
+            .configure_legend(labelColor=palette["muted"], titleColor=palette["muted"])
+        )
+        st.markdown("#### Factor deltas")
+        st.caption(
+            f"Burden-point differences versus {reference_product}, the highest point estimate in this scenario. "
+            "Positive values mean more modeled burden; the reference is not a conclusive winner when intervals overlap."
+        )
+        render_altair_chart(factor_delta_chart)
         st.download_button("Download comparison PDF", comparison_pdf(report_records), "luma-comparison.pdf", "application/pdf")
     else:
         st.caption("Choose at least two records. Search by a family, brand or identifier to narrow the list.")
@@ -854,12 +1448,66 @@ with compare:
 
 with saved:
     st.subheader("Your shortlist and reports")
+    with st.expander("Import assessments"):
+        st.markdown("#### Open one assessment")
+        imported_file = st.file_uploader("Choose a Luma scenario JSON file", type=["json"], key="scenario_json_import")
+        if imported_file is not None:
+            try:
+                imported_scenario = Scenario.from_json(imported_file.getvalue())
+                st.success(f"Valid scenario v{imported_scenario.schema_version}: {imported_scenario.inputs.get('manufacturer', 'Unknown')} {imported_scenario.inputs.get('name', 'Gadget')}")
+                if st.button("Open imported assessment", type="primary", key="open_imported_scenario"):
+                    st.query_params["tab"] = "analyse"
+                    st.query_params["scenario"] = imported_scenario.to_token()
+                    st.rerun()
+            except ScenarioError as exc:
+                st.error(f"This file is not a valid Luma scenario: {exc}")
+        st.markdown("#### Restore a shortlist project")
+        imported_project_file = st.file_uploader("Choose a Luma project JSON file", type=["json"], key="project_json_import")
+        if imported_project_file is not None:
+            try:
+                imported_project = ProjectBundle.from_json(imported_project_file.getvalue())
+                st.success(f"Valid project v{imported_project.schema_version}: {len(imported_project.scenarios)} assessment(s)")
+                if imported_project.source_snapshot != str(metadata.get("snapshot_id")):
+                    st.warning("This project was created from a different data snapshot. Saved summaries will be recalculated now; each scenario keeps its original version audit trail.")
+                if st.button("Restore project shortlist", type="primary", key="restore_imported_project"):
+                    restored_records = []
+                    for imported in imported_project.scenarios:
+                        project_row = catalog[catalog["product_id"].astype(str).eq(str(imported.product_id))] if imported.product_id else pd.DataFrame()
+                        if len(project_row):
+                            imported_values = product_values(project_row.iloc[0])
+                        else:
+                            imported_values = unlisted_device_values(
+                                str(imported.inputs.get("name") or "Unlisted gadget"),
+                                str(imported.inputs.get("manufacturer") or "Unknown"),
+                                str(imported.inputs.get("category") or "Other"),
+                                "Scenario import",
+                            )
+                        imported_values = _apply_scenario(imported_values, imported)
+                        imported_result = assess(imported_values)
+                        record = saved_record(imported_values, imported_result)
+                        record["scenario"] = imported.to_dict()
+                        restored_records.append(record)
+                    restored_ids = {record["id"] for record in restored_records}
+                    st.session_state.saved_gadgets = [
+                        item for item in st.session_state.saved_gadgets if item["id"] not in restored_ids
+                    ] + restored_records
+                    st.toast(f"Restored {len(restored_records)} assessment(s)")
+                    st.rerun()
+            except ProjectError as exc:
+                st.error(f"This file is not a valid Luma project: {exc}")
     if not st.session_state.saved_gadgets:
         st.info("Your shortlist is empty. Save a gadget from the analysis dashboard to build a portable comparison.")
     else:
         shortlist = pd.DataFrame(st.session_state.saved_gadgets)
-        for item in st.session_state.saved_gadgets:
+        for saved_index, item in enumerate(st.session_state.saved_gadgets, start=1):
             st.markdown(f'<div class="saved-card"><strong>{html.escape(item["product"])}</strong><br><span>{html.escape(item["category"])} · eco score {item["eco_score"]:.1f} ({item["score_low"]:.0f}–{item["score_high"]:.0f}) · confidence {item["confidence"]}% · {html.escape(item["source"])}</span></div>', unsafe_allow_html=True)
+            if item.get("scenario"):
+                try:
+                    saved_scenario = Scenario.from_dict(item["scenario"])
+                    saved_url = f"{str(st.context.url).split('?', 1)[0]}?tab=analyse&scenario={saved_scenario.to_token()}"
+                    st.link_button(f"Reopen saved assessment {saved_index} ↗", saved_url)
+                except ScenarioError:
+                    st.caption("This legacy saved item has no reopenable scenario contract.")
         table_columns = ["product", "category", "eco_score", "score_low", "score_high", "lifecycle_carbon", "annual_energy", "confidence", "source"]
         shortlist_view = shortlist[table_columns].rename(
             columns={
@@ -870,12 +1518,26 @@ with saved:
             }
         )
         render_data_table(shortlist_view, height=300, min_width=980, aria_label="Saved gadget shortlist")
-        s1, s2, s3 = st.columns(3)
+        s1, s2, s3, s4 = st.columns(4)
         with s1:
-            st.download_button("Download shortlist CSV", shortlist.to_csv(index=False).encode(), "luma-shortlist.csv", "text/csv", width="stretch")
+            st.download_button("Download shortlist CSV", csv_bytes(shortlist.drop(columns=["scenario"], errors="ignore")), "luma-shortlist.csv", "text/csv", width="stretch")
         with s2:
             st.download_button("Download shortlist PDF", comparison_pdf(st.session_state.saved_gadgets), "luma-shortlist.pdf", "application/pdf", width="stretch")
         with s3:
+            project_scenarios = []
+            for item in st.session_state.saved_gadgets:
+                if not item.get("scenario"):
+                    continue
+                try:
+                    project_scenarios.append(Scenario.from_dict(item["scenario"]))
+                except ScenarioError:
+                    continue
+            if project_scenarios:
+                project_json = ProjectBundle.create(project_scenarios, str(metadata.get("snapshot_id") or "unknown")).to_json().encode("utf-8")
+                st.download_button("Download project JSON", project_json, "luma-saved-project.json", "application/json", width="stretch")
+            else:
+                st.caption("Project export becomes available after saving a current assessment.")
+        with s4:
             if st.button("Clear shortlist", width="stretch"):
                 st.session_state.saved_gadgets = []
                 st.rerun()
@@ -884,25 +1546,29 @@ with saved:
 with intelligence:
     st.subheader("AI, evidence and data quality")
     blended = model_metrics.get("blended", {})
+    ledger_metrics = model_metrics.get("ledger_baseline", {})
+    validation = model_metrics.get("validation", {})
     q1, q2, q3, q4 = st.columns(4)
     q1.metric("Catalog records", f"{len(catalog):,}")
     q2.metric("Model scenarios", f"{model_metrics.get('samples', 0):,}")
-    q3.metric("Holdout MAE", f"{blended.get('mae', 0):.2f} pts")
-    q4.metric("Specialists", len(model_metrics.get("categories", {})))
+    q3.metric("Neural synthetic MAE", f"{blended.get('mae', 0):.2f} pts")
+    q4.metric("Ledger synthetic MAE", f"{ledger_metrics.get('mae', 0):.2f} pts")
     st.markdown(
         """
         <div class="method-flow">
           <div class="flow-node">Public evidence<span>Registries, certification, repair and product reports</span></div><div class="flow-arrow">→</div>
-          <div class="flow-node">Transparent lifecycle ledger<span>72–100% depending on evidence</span></div><div class="flow-arrow">+</div>
-          <div class="flow-node">Category-aware neural estimate<span>Up to 28%, reduced without product observations</span></div>
+          <div class="flow-node">Transparent lifecycle ledger<span>Current point-score method</span></div><div class="flow-arrow">+</div>
+          <div class="flow-node">Category-aware neural model<span>Experimental shadow prediction and applicability check</span></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.markdown(
-        """The global neural network learns broad nonlinear relationships, while specialist networks learn within-category patterns for phones, laptops, tablets, TVs and other device families. Training features are anchored to this snapshot's observed product distributions. The target remains a **disclosed physics-informed lifecycle ledger**, because no public dataset provides complete, comparable LCAs for every gadget.
+        f"""The global neural network learns broad nonlinear relationships, while specialist networks test within-category patterns for phones, laptops, tablets, TVs and other device families. Training features are anchored to this snapshot's observed product distributions. The target remains a **disclosed physics-informed lifecycle ledger**, because no public dataset provides complete, comparable LCAs for every gadget.
 
-For catalog products with at least one environmental observation, the neural estimate contributes at most 28%. It drops to 12% for identity-only or unlisted records in a recognised category and to zero for generic ``Other`` devices. The score range combines model holdout error with evidence coverage and is widened for weakly evidenced devices. It is a sensitivity range—not a guarantee or regulatory declaration."""
+The deterministic ledger currently performs better on the synthetic holdout ({ledger_metrics.get('mae', 0):.3f} MAE versus {blended.get('mae', 0):.3f} for the blended neural model). The neural model therefore runs in **experimental shadow mode**: it contributes no point-score weight until an external real-LCA benchmark validates an improvement. It still exposes diagnostics, applicability-domain warnings and a conservative model-error component. The displayed range remains a sensitivity range—not a guarantee or regulatory declaration.
+
+Validation status: **{validation.get('deployment_status', 'not recorded')}** · real-LCA validated: **{validation.get('validated_for_real_lca', False)}** · {len(model_metrics.get('categories', {}))} category specialists."""
     )
     d1, d2 = st.columns([1, 1])
     with d1:
@@ -924,11 +1590,11 @@ For catalog products with at least one environmental observation, the neural est
     st.markdown("#### Current sources")
     for source in metadata.get("sources", []):
         st.markdown(
-            f'<div class="source-card"><a href="{html.escape(source["url"])}" target="_blank">{html.escape(source["name"])} ↗</a><span>{source.get("records", 0):,} relevant records · retrieved {html.escape(source.get("retrieved_at", "")[:10])} · {html.escape(source.get("license", "See source terms"))}</span></div>',
+            f'<div class="source-card"><a href="{html.escape(source["url"], quote=True)}" target="_blank" rel="noopener noreferrer">{html.escape(source["name"])} ↗</a><span>{source.get("records", 0):,} relevant records · retrieved {html.escape(source.get("retrieved_at", "")[:10])} · {html.escape(source.get("license", "See source terms"))}</span></div>',
             unsafe_allow_html=True,
         )
     st.markdown(
-        f'<div class="source-card"><a href="https://github.com/AryaPriyanshu/environmental-impact-analyzer" target="_blank">Reviewed consumer identity manifest ↗</a><span>{max(0, len(catalog) - metadata.get("record_count", len(catalog))):,} identity or corrected-variant records · reviewed 2026-08-24 · manufacturer pages linked; source terms apply</span></div>',
+        f'<div class="source-card"><a href="https://github.com/AryaPriyanshu/environmental-impact-analyzer" target="_blank" rel="noopener noreferrer">Reviewed consumer identity manifest ↗</a><span>{max(0, len(catalog) - metadata.get("record_count", len(catalog))):,} identity or corrected-variant records · reviewed 2026-08-24 · manufacturer pages linked; source terms apply</span></div>',
         unsafe_allow_html=True,
     )
     with st.expander("Limitations and responsible interpretation"):

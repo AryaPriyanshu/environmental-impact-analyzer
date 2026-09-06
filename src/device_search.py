@@ -71,7 +71,11 @@ MANUFACTURER_SIGNALS: tuple[tuple[str, str], ...] = (
 CATEGORY_SIGNALS: tuple[tuple[str, str], ...] = (
     (r"\b(?:kindle|e[- ]?reader|ebook reader|remarkable)\b", "E-reader"),
     (r"\b(?:galaxy tab|ipad|tablet)\b", "Tablet"),
-    (r"\b(?:airpods?|galaxy buds?|pixel buds?|earbuds?|earphones?|headphones?|headset)\b", "Headphones"),
+    (
+        r"\b(?:airpods?|galaxy buds?|pixel buds?|earbuds?|earphones?|headphones?|headset"
+        r"|(?:wh|wf) ?(?:1000xm\d|ch\d{3}[a-z]*))\b",
+        "Headphones",
+    ),
     (r"\b(?:apple watch|galaxy watch|pixel watch|smart ?watch|fitbit|fitness band|wearable)\b", "Smartwatch"),
     (r"\b(?:apple tv|chromecast|roku|fire tv|streaming (?:stick|device)|media player|set top box)\b", "Streaming device"),
     (r"\b(?:vision pro|meta quest|oculus|virtual reality|mixed reality|vr headset|spatial computer)\b", "Spatial computer"),

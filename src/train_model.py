@@ -98,7 +98,8 @@ def _base_scenarios(category: str, count: int, official: pd.DataFrame, rng: np.r
     return scenarios[FEATURES]
 
 
-def _ledger_target(data: pd.DataFrame, rng: np.random.Generator) -> np.ndarray:
+def _ledger_score(data: pd.DataFrame) -> np.ndarray:
+    """Return the deterministic reference ledger used to define scenarios."""
     life = data["lifespan_years"].clip(lower=0.5)
     use_carbon = data["active_power_w"] * data["daily_hours"] * 365 / 1000 * life * data["grid_kg_co2_per_kwh"]
     transport = data["weight_kg"] * data["transport_km"] * 0.00012
@@ -113,14 +114,20 @@ def _ledger_target(data: pd.DataFrame, rng: np.random.Generator) -> np.ndarray:
             "transport": np.minimum(100, transport * 1.8),
         }
     )
-    target = (
+    return np.clip(
         factors["manufacturing"] * 0.35
         + factors["use"] * 0.22
         + factors["longevity"] * 0.18
         + factors["circularity"] * 0.13
         + factors["battery"] * 0.08
-        + factors["transport"] * 0.04
+        + factors["transport"] * 0.04,
+        0,
+        100,
     )
+
+
+def _ledger_target(data: pd.DataFrame, rng: np.random.Generator) -> np.ndarray:
+    target = _ledger_score(data)
     # Modest noise represents unmodelled supplier, behaviour and boundary detail.
     return np.clip(target + rng.normal(0, 2.4, len(data)), 0, 100)
 
@@ -192,6 +199,7 @@ def train_model(n_samples: int = 16000, random_state: int = 42) -> dict[str, Any
     global_model.fit(train[FEATURES], train["impact_score"])
     global_prediction = global_model.predict(test[FEATURES])
     global_metrics = _scores(test["impact_score"], global_prediction)
+    ledger_metrics = _scores(test["impact_score"], _ledger_score(test))
 
     category_models, category_metrics, category_weights, calibration = {}, {}, {}, {"__global__": global_metrics}
     blended = global_prediction.copy()
@@ -229,6 +237,7 @@ def train_model(n_samples: int = 16000, random_state: int = 42) -> dict[str, Any
         calibration[category] = metrics
 
     blended_metrics = _scores(test["impact_score"], blended)
+    neural_mae_improvement = round(float(ledger_metrics["mae"] - blended_metrics["mae"]), 3)
     metadata_path = ROOT / "data" / "source_metadata.json"
     source_metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
     trained_at = datetime.now(timezone.utc).isoformat()
@@ -252,6 +261,14 @@ def train_model(n_samples: int = 16000, random_state: int = 42) -> dict[str, Any
         "test_samples": len(test),
         "global": global_metrics,
         "blended": blended_metrics,
+        "ledger_baseline": ledger_metrics,
+        "validation": {
+            "scope": "Synthetic scenario-target reconstruction; not empirical lifecycle-carbon validation",
+            "split": "Random category-stratified scenario holdout",
+            "validated_for_real_lca": False,
+            "neural_mae_improvement_over_ledger": neural_mae_improvement,
+            "deployment_status": "experimental_assist" if neural_mae_improvement <= 0 else "synthetic_target_candidate",
+        },
         "categories": category_metrics,
         "random_state": random_state,
         "architecture": {
